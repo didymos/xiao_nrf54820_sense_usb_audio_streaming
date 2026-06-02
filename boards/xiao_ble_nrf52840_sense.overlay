@@ -1,0 +1,22 @@
+/*
+ * Device Tree overlay — XIAO nRF52840 Sense USB Microphone
+ *
+ * The board DTS (xiao_ble_nrf52840_sense.dts) already defines:
+ *   - pdm0 with pinctrl (CLK=P1.00, DIN=P0.16) and mic power regulator
+ * This overlay only adds what is missing: the USB Audio Class node.
+ */
+
+/* ── Confirm PDM peripheral is enabled ──────────────────────────────────── */
+&pdm0 {
+	status = "okay";
+};
+
+/* ── USB Audio Class 1 — microphone input terminal ──────────────────────── */
+/ {
+	usb_audio_mic: usb-audio-mic {
+		compatible = "zephyr,usb-audio-mic";
+		mic-channel = "mono";
+		feature-mute;
+		status = "okay";
+	};
+};
