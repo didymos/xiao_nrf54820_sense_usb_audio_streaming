@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Field Recorder</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:      #111;
+    --surface: #1e1e1e;
+    --border:  #333;
+    --text:    #e8e8e8;
+    --muted:   #888;
+    --green:   #2ecc71;
+    --red:     #e74c3c;
+    --amber:   #f39c12;
+    --blue:    #3498db;
+    --radius:  10px;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 16px;
+    min-height: 100vh;
+    padding: 16px;
+  }
+
+  h1 {
+    font-size: 1.2rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  h1 .badge {
+    font-size: 0.65rem;
+    background: #2a2a2a;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 6px;
+    color: var(--muted);
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin-bottom: 14px;
+  }
+
+  /* ── Main button ── */
+  #main-btn {
+    width: 100%;
+    padding: 22px 0;
+    border: none;
+    border-radius: var(--radius);
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #main-btn:active:not(:disabled) { transform: scale(0.97); }
+  #main-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  #main-btn.idle    { background: var(--green); color: #000; }
+  #main-btn.arming  { background: var(--amber); color: #000; }
+  #main-btn.recording { background: var(--red); color: #fff; }
+  #main-btn.stopping  { background: #555; color: #ccc; }
+  #main-btn.error     { background: #8b0000; color: #fff; }
+
+  .pulse-dot {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: #fff;
+    margin-right: 6px;
+    animation: pulse 1.2s ease-in-out infinite;
+    vertical-align: middle;
+  }
+  @keyframes pulse {
+    0%,100% { opacity: 1; transform: scale(1); }
+    50%      { opacity: 0.3; transform: scale(0.7); }
+  }
+
+  /* ── Timer / countdown ── */
+  #timer {
+    text-align: center;
+    font-size: 2.8rem;
+    font-weight: 300;
+    font-variant-numeric: tabular-nums;
+    margin-top: 10px;
+    min-height: 3.2rem;
+    color: var(--muted);
+    letter-spacing: 0.06em;
+  }
+  #timer.active { color: var(--text); }
+
+  /* ── Session input ── */
+  .label { font-size: 0.78rem; color: var(--muted); margin-bottom: 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+  input[type="text"] {
+    width: 100%;
+    background: #252525;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 1rem;
+    padding: 10px 12px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  input[type="text"]:focus { border-color: var(--blue); }
+
+  /* ── Mics row ── */
+  .mic-row {
+    display: flex;
+    gap: 10px;
+    justify-content: space-between;
+  }
+  .mic {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 6px;
+    background: #252525;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+  }
+  .mic-dot {
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: var(--red);
+    transition: background 0.3s;
+  }
+  .mic-dot.ok { background: var(--green); }
+  .mic-label { font-size: 0.7rem; color: var(--muted); font-weight: 600; letter-spacing: 0.04em; }
+
+  /* ── Disk indicator ── */
+  .disk-bar-track {
+    width: 100%;
+    height: 8px;
+    background: #333;
+    border-radius: 4px;
+    margin-top: 8px;
+    overflow: hidden;
+  }
+  .disk-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    background: var(--green);
+    transition: width 0.4s, background 0.4s;
+  }
+  .disk-info { display: flex; justify-content: space-between; align-items: baseline; }
+  .disk-free { font-size: 1.1rem; font-weight: 600; }
+  .disk-total { font-size: 0.8rem; color: var(--muted); }
+
+  /* ── Status row ── */
+  .status-row {
+    display: flex;
+    gap: 10px;
+    font-size: 0.78rem;
+    color: var(--muted);
+    justify-content: space-between;
+    align-items: center;
+  }
+  .dot-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .dot-indicator::before {
+    content: '';
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--red);
+  }
+  .dot-indicator.ok::before { background: var(--green); }
+  .dot-indicator.warn::before { background: var(--amber); }
+
+  /* ── Spinner ── */
+  .spinner {
+    display: inline-block;
+    width: 18px; height: 18px;
+    border: 2px solid #555;
+    border-top-color: #bbb;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    vertical-align: middle;
+    margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Connection banner ── */
+  #conn-banner {
+    display: none;
+    background: #5c2a00;
+    border: 1px solid #8b4400;
+    border-radius: var(--radius);
+    padding: 10px 14px;
+    font-size: 0.85rem;
+    margin-bottom: 14px;
+    text-align: center;
+  }
+
+  /* ── Error banner ── */
+  #error-banner {
+    display: none;
+    background: #3a0000;
+    border: 1px solid #8b0000;
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    margin-bottom: 14px;
+    font-size: 0.85rem;
+  }
+  #error-banner strong { display: block; margin-bottom: 4px; color: var(--red); }
+
+  /* ── Recordings list ── */
+  #rec-section h2 {
+    font-size: 0.85rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 700;
+    margin-bottom: 10px;
+  }
+  .rec-item {
+    background: #252525;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+  }
+  .rec-info { flex: 1; min-width: 0; }
+  .rec-name {
+    font-size: 0.88rem;
+    font-weight: 600;
+    word-break: break-all;
+    margin-bottom: 3px;
+  }
+  .rec-meta { font-size: 0.73rem; color: var(--muted); }
+  .rec-dl-badge {
+    font-size: 0.67rem;
+    color: var(--green);
+    margin-left: 6px;
+    opacity: 0.8;
+  }
+  .rec-actions { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
+  .btn-sm {
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #2a2a2a;
+    color: var(--text);
+    font-size: 0.82rem;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .btn-sm:hover { background: #333; }
+  .btn-sm.danger { border-color: #5a1a1a; color: var(--red); }
+  .btn-sm.danger:hover { background: #3a0000; }
+  .btn-sm.primary { background: #1a3a5a; border-color: #2a5a8a; color: #7bc8f0; }
+  .btn-sm.primary:hover { background: #1e4570; }
+
+  #no-recs { color: var(--muted); font-size: 0.85rem; text-align: center; padding: 20px 0; }
+
+  /* ── Pi time / xruns ── */
+  .footer-info {
+    font-size: 0.7rem;
+    color: #555;
+    text-align: center;
+    margin-top: 10px;
+    padding-bottom: 10px;
+  }
+</style>
+</head>
+<body>
+
+<h1>Field Recorder <span class="badge" id="mock-badge" style="display:none">MOCK</span></h1>
+
+<div id="conn-banner">&#9888; Connection lost — retrying…</div>
+<div id="error-banner"><strong>Error</strong><span id="error-text"></span></div>
+
+<!-- Main action card -->
+<div class="card">
+  <button id="main-btn" class="idle" onclick="handleMainBtn()">START</button>
+  <div id="timer">—</div>
+  <div style="margin-top:14px">
+    <div class="label">Session name</div>
+    <input type="text" id="session" placeholder="take" maxlength="48"
+           onkeydown="if(event.key==='Enter')handleMainBtn()">
+  </div>
+</div>
+
+<!-- MIC status -->
+<div class="card">
+  <div class="label" style="margin-bottom:10px">Microphones</div>
+  <div class="mic-row" id="mic-row">
+    <div class="mic"><div class="mic-dot" id="mic-0"></div><div class="mic-label">MIC1</div></div>
+    <div class="mic"><div class="mic-dot" id="mic-1"></div><div class="mic-label">MIC2</div></div>
+    <div class="mic"><div class="mic-dot" id="mic-2"></div><div class="mic-label">MIC3</div></div>
+    <div class="mic"><div class="mic-dot" id="mic-3"></div><div class="mic-label">MIC4</div></div>
+  </div>
+</div>
+
+<!-- Disk + JACK status -->
+<div class="card">
+  <div class="disk-info">
+    <span class="disk-free" id="disk-free">— GB</span>
+    <span class="disk-total" id="disk-total">free</span>
+  </div>
+  <div class="disk-bar-track"><div class="disk-bar-fill" id="disk-bar" style="width:0%"></div></div>
+  <div class="status-row" style="margin-top:12px">
+    <span class="dot-indicator" id="jack-dot">JACK</span>
+    <span id="xruns-info" style="color:#555">xruns: —</span>
+    <span id="sr-info" style="color:#555">— Hz</span>
+  </div>
+</div>
+
+<!-- Recordings list -->
+<div id="rec-section">
+  <h2>Recordings</h2>
+  <div id="rec-list"><div id="no-recs">Loading…</div></div>
+</div>
+
+<div class="footer-info" id="footer-info">pi time: —</div>
+
+<script>
+(function () {
+  "use strict";
+
+  let lastState = "IDLE";
+  let connErrCount = 0;
+  let recRefreshTimer = null;
+  let MIN_FREE_MB = 500;
+  let COUNTDOWN_BEEPS = 3;
+
+  // ── Time sync ──────────────────────────────────────────────────────────────
+  fetch("/api/time", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ epoch_ms: Date.now() }),
+  }).catch(() => {});
+
+  // ── Status polling ─────────────────────────────────────────────────────────
+  function poll() {
+    fetch("/api/status")
+      .then(r => r.ok ? r.json() : Promise.reject(r.status))
+      .then(data => {
+        connErrCount = 0;
+        document.getElementById("conn-banner").style.display = "none";
+        updateUI(data);
+      })
+      .catch(() => {
+        connErrCount++;
+        if (connErrCount >= 2) {
+          document.getElementById("conn-banner").style.display = "block";
+        }
+      });
+  }
+  poll();
+  setInterval(poll, 1000);
+
+  // ── UI update ──────────────────────────────────────────────────────────────
+  function updateUI(d) {
+    const state = d.state;
+    lastState = state;
+    COUNTDOWN_BEEPS = d.countdown_beeps || 3;
+
+    // Mock badge
+    if (d.mock !== undefined) {
+      // We check via /api/health for mock flag, but health has it
+    }
+
+    // Error banner
+    const errBanner = document.getElementById("error-banner");
+    if (state === "ERROR" && d.error) {
+      errBanner.style.display = "block";
+      document.getElementById("error-text").textContent = d.error;
+    } else {
+      errBanner.style.display = "none";
+    }
+
+    // Main button
+    const btn = document.getElementById("main-btn");
+    btn.className = state.toLowerCase();
+
+    if (state === "IDLE") {
+      btn.disabled = false;
+      btn.innerHTML = "START";
+    } else if (state === "ARMING") {
+      btn.disabled = true;
+      const remaining = Math.max(0, Math.ceil(COUNTDOWN_BEEPS - d.elapsed_seconds));
+      btn.innerHTML = remaining > 0 ? `<span class="spinner"></span> ${remaining}` : `<span class="spinner"></span> Starting…`;
+    } else if (state === "RECORDING") {
+      btn.disabled = false;
+      btn.innerHTML = `<span class="pulse-dot"></span>STOP`;
+    } else if (state === "STOPPING") {
+      btn.disabled = true;
+      btn.innerHTML = `<span class="spinner"></span> Saving…`;
+    } else if (state === "ERROR") {
+      btn.disabled = false;
+      btn.innerHTML = "Reset";
+    }
+
+    // Timer
+    const timerEl = document.getElementById("timer");
+    if (state === "RECORDING") {
+      const s = Math.floor(d.elapsed_seconds);
+      const mm = String(Math.floor(s / 60)).padStart(2, "0");
+      const ss = String(s % 60).padStart(2, "0");
+      timerEl.textContent = `${mm}:${ss}`;
+      timerEl.className = "active";
+    } else if (state === "ARMING") {
+      const remaining = Math.max(0, Math.ceil(COUNTDOWN_BEEPS - d.elapsed_seconds));
+      timerEl.textContent = remaining > 0 ? remaining : "…";
+      timerEl.className = "active";
+    } else {
+      timerEl.textContent = "—";
+      timerEl.className = "";
+    }
+
+    // Mics
+    (d.mics || []).forEach((m, i) => {
+      const dot = document.getElementById("mic-" + i);
+      if (dot) {
+        dot.classList.toggle("ok", m.present);
+        dot.title = m.port + (m.present ? " ✓" : " ✗");
+      }
+    });
+
+    // Disk
+    const freeMb = d.disk_free_mb || 0;
+    const totalMb = d.disk_total_mb || 0;
+    const freeGb = (freeMb / 1024).toFixed(1);
+    const totalGb = (totalMb / 1024).toFixed(1);
+    const freeEl = document.getElementById("disk-free");
+    const barEl = document.getElementById("disk-bar");
+    freeEl.textContent = `${freeGb} GB`;
+    document.getElementById("disk-total").textContent = `free of ${totalGb} GB`;
+    const pct = totalMb > 0 ? ((totalMb - freeMb) / totalMb) * 100 : 0;
+    barEl.style.width = pct.toFixed(1) + "%";
+    if (freeMb < MIN_FREE_MB) {
+      freeEl.style.color = "var(--red)";
+      barEl.style.background = "var(--red)";
+    } else if (freeMb < 2048) {
+      freeEl.style.color = "var(--amber)";
+      barEl.style.background = "var(--amber)";
+    } else {
+      freeEl.style.color = "var(--green)";
+      barEl.style.background = "var(--green)";
+    }
+
+    // JACK
+    const jackDot = document.getElementById("jack-dot");
+    jackDot.classList.toggle("ok", d.jack_alive);
+    jackDot.classList.toggle("warn", !d.jack_alive);
+
+    // xruns / SR
+    const xr = d.xruns;
+    document.getElementById("xruns-info").textContent =
+      xr < 0 ? "xruns: n/a" : `xruns: ${xr}`;
+    document.getElementById("sr-info").textContent =
+      d.sample_rate ? `${d.sample_rate} Hz` : "";
+
+    // Pi time
+    document.getElementById("footer-info").textContent =
+      "Pi time: " + (d.pi_time ? d.pi_time.replace("T", " ").slice(0, 19) : "—");
+
+    // Reload recordings after stop completes
+    if (lastState !== "IDLE" && state === "IDLE") {
+      setTimeout(loadRecordings, 500);
+    }
+  }
+
+  // ── Button handler ─────────────────────────────────────────────────────────
+  window.handleMainBtn = function () {
+    if (lastState === "IDLE") {
+      startRecording();
+    } else if (lastState === "RECORDING") {
+      stopRecording();
+    } else if (lastState === "ERROR") {
+      resetError();
+    }
+  };
+
+  function startRecording() {
+    const session = document.getElementById("session").value.trim() || "take";
+    fetch("/api/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session }),
+    })
+      .then(r => r.json().then(d => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (!ok) {
+          showToast(d.detail || "Start failed", true);
+        } else {
+          updateUI(d);
+        }
+      })
+      .catch(e => showToast("Network error: " + e, true));
+  }
+
+  function stopRecording() {
+    fetch("/api/stop", { method: "POST" })
+      .then(r => r.json().then(d => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (!ok) showToast(d.detail || "Stop failed", true);
+        else updateUI(d);
+      })
+      .catch(e => showToast("Network error: " + e, true));
+  }
+
+  function resetError() {
+    fetch("/api/reset", { method: "POST" })
+      .then(r => r.json())
+      .then(d => updateUI(d))
+      .catch(() => {});
+  }
+
+  // ── Recordings list ────────────────────────────────────────────────────────
+  function loadRecordings() {
+    fetch("/api/recordings")
+      .then(r => r.json())
+      .then(renderRecordings)
+      .catch(() => {});
+  }
+  loadRecordings();
+  setInterval(loadRecordings, 15000);
+
+  function renderRecordings(list) {
+    const el = document.getElementById("rec-list");
+    if (!list || list.length === 0) {
+      el.innerHTML = '<div id="no-recs">No recordings yet.</div>';
+      return;
+    }
+    el.innerHTML = list.map(r => {
+      const dur = r.duration_s >= 60
+        ? `${Math.floor(r.duration_s / 60)}m ${Math.floor(r.duration_s % 60)}s`
+        : `${r.duration_s}s`;
+      const ts = r.created ? r.created.replace("T", " ").slice(0, 19) : "";
+      const dlBadge = r.downloaded ? '<span class="rec-dl-badge">✓ downloaded</span>' : "";
+      return `<div class="rec-item">
+        <div class="rec-info">
+          <div class="rec-name">${esc(r.name)}${dlBadge}</div>
+          <div class="rec-meta">${dur} &nbsp;·&nbsp; ${r.size_mb} MB &nbsp;·&nbsp; ${r.channels}ch &nbsp;·&nbsp; ${ts}</div>
+        </div>
+        <div class="rec-actions">
+          <button class="btn-sm primary" onclick="dlRec('${esc(r.name)}')">Download</button>
+          <button class="btn-sm danger" onclick="delRec('${esc(r.name)}', this)">Delete</button>
+        </div>
+      </div>`;
+    }).join("");
+  }
+
+  window.dlRec = function (name) {
+    const a = document.createElement("a");
+    a.href = "/api/recordings/" + encodeURIComponent(name) + "/download";
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(loadRecordings, 2000);
+  };
+
+  window.delRec = function (name, btn) {
+    if (!confirm("Delete " + name + "?")) return;
+    btn.disabled = true;
+    fetch("/api/recordings/" + encodeURIComponent(name), { method: "DELETE" })
+      .then(r => r.ok ? loadRecordings() : showToast("Delete failed", true))
+      .catch(e => showToast("Network error: " + e, true));
+  };
+
+  // ── Health check for mock badge ────────────────────────────────────────────
+  fetch("/api/health")
+    .then(r => r.json())
+    .then(h => {
+      if (h.mock) document.getElementById("mock-badge").style.display = "";
+      MIN_FREE_MB = h.disk_free_mb !== undefined ? 500 : 500;
+    })
+    .catch(() => {});
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function esc(s) {
+    return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  }
+
+  let toastTimer;
+  function showToast(msg, isError) {
+    const banner = document.getElementById("error-banner");
+    document.getElementById("error-text").textContent = msg;
+    banner.style.display = "block";
+    clearTimeout(toastTimer);
+    if (!isError) toastTimer = setTimeout(() => { banner.style.display = "none"; }, 4000);
+  }
+})();
+</script>
+</body>
+</html>

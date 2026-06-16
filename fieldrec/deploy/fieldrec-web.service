@@ -1,0 +1,17 @@
+[Unit]
+Description=Field recording web controller
+After=audio-sync.service network-online.target
+Requires=audio-sync.service
+
+[Service]
+User=rec
+WorkingDirectory=/opt/fieldrec
+ExecStart=/opt/fieldrec/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fieldrec
+
+[Install]
+WantedBy=multi-user.target

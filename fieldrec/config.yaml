@@ -1,0 +1,14 @@
+sample_rate: 16000
+channels: 4
+jack_ports:
+  - system:capture_1
+  - mic2:capture_1
+  - mic3:capture_1
+  - mic4:capture_1
+out_device: "plughw:CARD=Device"
+recordings_dir: "/mnt/ssd/recordings"
+bit_depth: 16
+host: "0.0.0.0"
+port: 8080
+countdown_beeps: 3
+min_free_mb: 500
