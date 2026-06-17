@@ -449,8 +449,12 @@ class RecorderController:
             else:
                 cmd = self._build_capture_cmd(out_path)
                 log.info("jack_capture: %s", " ".join(shlex.quote(c) for c in cmd))
+                # Hold stdin open with a pipe: jack_capture stops on Return/EOF,
+                # and under systemd stdin would be /dev/null (instant EOF). An
+                # open pipe we never write to keeps it recording until SIGINT.
                 proc = subprocess.Popen(
                     cmd,
+                    stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                 )
