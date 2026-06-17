@@ -204,8 +204,8 @@ HOTSPOT_SSID=FieldRec
 HOTSPOT_PASS=fieldrecpass
 CONFEOF
 
-chmod 640 /etc/fieldrec/fieldrec.conf
-chown root:"$TARGET_USER" /etc/fieldrec/fieldrec.conf
+chmod 644 /etc/fieldrec/fieldrec.conf
+chown root:root /etc/fieldrec/fieldrec.conf
 log_ok "Config written to /etc/fieldrec/fieldrec.conf"
 
 # ── Step 11: Deploy application files ────────────────────────────────────────
