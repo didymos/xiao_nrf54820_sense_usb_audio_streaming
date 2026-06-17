@@ -1,269 +1,180 @@
-# Field Recording Controller
+# FieldRec — Production Field Audio Recorder for Raspberry Pi 5
 
-A robust, field-deployable 4-channel audio recording controller for Raspberry Pi 5.
-Self-contained web UI served over the Pi's Wi-Fi AP at `http://10.42.0.1:8080`.
+A production-grade 4-channel USB audio recording system: JACK-based capture,
+synchronized GO-tone sync marker, mobile-first web UI, Wi-Fi hotspot, NVMe storage.
+
+---
+
+## Quick Start
+
+```bash
+sudo ./install.sh          # automated install
+sudo ./install.sh --enroll # interactive mic enrollment (plug in one at a time)
+```
+
+Browse to `http://<pi-ip>:8080` (or the hotspot address) from any device.
+
+---
 
 ## Features
 
-- 4-channel JACK capture (`jack_capture`) with drift-locked clock
-- Synchronized GO-tone sync marker captured in-band by all mics
-- Countdown beeps → GO tone → recording (state machine, never double-spawns)
-- Mobile-first web UI: large touch targets, dark theme, no external CDN
-- Automatic time sync from browser (no RTC required)
-- Download & delete recordings from the UI
-- Mock mode for development without hardware
+- **4-channel JACK capture** via `jack_capture` with per-mic zita-a2j bridges
+- **USB port-path mic identification** — survives reboots regardless of enumeration order
+- **Synchronized GO-tone** (1320 Hz, in-band) for precise multi-recorder post-sync
+- **Countdown beeps** before recording starts
+- **Per-recording JSON sidecar** with GO-tone UTC timestamp and offset
+- **Mobile-first dark web UI** — vanilla JS, no CDN, works fully offline
+- **NVMe SSD auto-detect** with ext4 format and /etc/fstab mount
+- **Wi-Fi hotspot** via NetworkManager (SSID: FieldRec)
+- **RT scheduling** — JACK runs at priority 70, memlock unlimited
+- **CPU performance governor** via sysfs (oneshot systemd service)
+- **Mock mode** — full state machine works without any JACK hardware
 
 ---
 
-## Prerequisites (on the Pi, already provided by the setup tutorial)
+## Directory Layout
 
-- Raspberry Pi OS Bookworm (64-bit), user `rec` in group `audio`
-- `audio-sync.service` running with JACK ports:
-  `system:capture_1`, `mic2:capture_1`, `mic3:capture_1`, `mic4:capture_1`
-- `jack_capture`, `jack_lsp`, `jack_samplerate`, `aplay` installed
-- USB speaker at `plughw:CARD=Device` (optional — cues disabled if absent)
-- SSD mounted at `/mnt/ssd/recordings`
-- Python 3.11+
+```
+fieldrec/
+  install.sh                  main idempotent installer (sudo ./install.sh)
+  uninstall.sh                clean removal
+  lib/
+    log.sh                    colored logging helpers
+    packages.sh               per-package apt + jack_capture source fallback
+    audio.sh                  neutralize audio servers, RT tuning, output detect
+    network.sh                nmcli hotspot
+    storage.sh                NVMe detect + mount, recordings dir
+    mics.sh                   USB mic enrollment, sample rate detection
+    selftest.sh               post-install self-test suite
+  config/
+    fieldrec.conf.default     template config (reference only)
+  audio/
+    start-audio.sh            JACK + zita-a2j startup script
+  tones/
+    make_tones.py             generates WAV cue tones (numpy + soundfile)
+  app/
+    main.py                   FastAPI controller
+    static/index.html         mobile-first SPA
+    requirements.txt
+  systemd/
+    audio-sync.service.tmpl   JACK stack service template
+    fieldrec-web.service.tmpl FastAPI web service template
+    cpu-performance.service   sysfs CPU governor oneshot
+```
 
 ---
 
-## Installation on the Pi
+## Config File: `/etc/fieldrec/fieldrec.conf`
 
-### 1. Clone / copy the project
+Shell `key=value` format. Written by `install.sh`; edit to override.
 
-```bash
-sudo mkdir -p /opt/fieldrec
-sudo chown rec:rec /opt/fieldrec
-# copy this directory to /opt/fieldrec
-rsync -av fieldrec/ rec@10.42.0.1:/opt/fieldrec/
-```
-
-### 2. Create the venv and install dependencies
-
-```bash
-cd /opt/fieldrec
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-```
-
-### 3. Grant the time-setting sudo rule
-
-```bash
-sudo tee /etc/sudoers.d/fieldrec-time <<'EOF'
-rec ALL=(root) NOPASSWD: /usr/bin/date -s *
-EOF
-sudo chmod 440 /etc/sudoers.d/fieldrec-time
-```
-
-### 4. Install and enable the systemd service
-
-```bash
-sudo cp /opt/fieldrec/deploy/fieldrec-web.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable fieldrec-web.service
-sudo systemctl start fieldrec-web.service
-```
-
-### 5. Check it's running
-
-```bash
-sudo systemctl status fieldrec-web.service
-journalctl -u fieldrec-web.service -f
-```
-
-Open `http://10.42.0.1:8080` on any phone or laptop connected to the Pi's Wi-Fi AP.
-
----
-
-## Running manually
-
-### Production (on the Pi)
-
-```bash
-cd /opt/fieldrec
-.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080
-```
-
-### Development / mock mode (any machine)
-
-```bash
-cd fieldrec
-pip install -r requirements.txt        # or use the venv
-FIELDREC_MOCK=1 uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
-```
-
-Or with the flag:
-
-```bash
-FIELDREC_MOCK=1 python -m uvicorn app.main:app --port 8080
-```
-
-In mock mode:
-- `jack_lsp`, `jack_capture`, and `aplay` are all stubbed
-- Recordings are written to a temp directory printed at startup
-- The full start → countdown → record → stop → saved cycle works end-to-end
-- A **MOCK** badge appears in the UI header
-
----
-
-## Configuration (`config.yaml`)
-
-| Key | Default | Description |
+| Key | Example | Description |
 |---|---|---|
-| `sample_rate` | `16000` | Recording sample rate (must match JACK) |
-| `channels` | `4` | Number of capture channels |
-| `jack_ports` | see below | Ordered list → WAV channel order |
-| `out_device` | `plughw:CARD=Device` | ALSA device for cue tones |
-| `recordings_dir` | `/mnt/ssd/recordings` | Output directory |
-| `bit_depth` | `16` | WAV bit depth |
-| `host` | `0.0.0.0` | Bind address |
-| `port` | `8080` | Listen port |
-| `countdown_beeps` | `3` | Number of pre-start beeps |
-| `min_free_mb` | `500` | Minimum free disk (MB) to allow start |
+| `TARGET_USER` | `rec` | System user running services |
+| `RECORDINGS_DIR` | `/mnt/ssd/recordings` | Output directory |
+| `SAMPLE_RATE` | `48000` | Recording sample rate (Hz) |
+| `CHANNELS` | `4` | Number of capture channels |
+| `JACK_FRAMES` | `512` | JACK buffer frames |
+| `JACK_NPERIODS` | `3` | JACK periods |
+| `JACK_MASTER_PORT` | `1-1.1` | USB port path for MIC1 (JACK master) |
+| `MIC_PORTS` | `"1-1.1 1-1.2 1-1.3 1-1.4"` | All USB port paths |
+| `JACK_PORTS` | `"system:capture_1 mic2:capture_1 ..."` | JACK port names for capture |
+| `OUT_DEVICE` | `plughw:CARD=Speaker` | ALSA output for tone playback |
+| `BIT_DEPTH` | `16` | Recording bit depth |
+| `COUNTDOWN_BEEPS` | `3` | Number of countdown beeps |
+| `MIN_FREE_MB` | `500` | Minimum free disk to allow recording |
+| `HTTP_PORT` | `8080` | Web interface port |
+| `HOTSPOT_SSID` | `FieldRec` | Wi-Fi hotspot SSID |
+| `HOTSPOT_PASS` | `fieldrecpass` | Wi-Fi hotspot password |
+
+---
+
+## Audio Stack Architecture
+
+```
+USB mic1 ──► jackd (hw:<mic1_card>) ──► system:capture_1 ─┐
+USB mic2 ──► zita-a2j (mic2)        ──► mic2:capture_1   ─┤──► jack_capture ──► session.wav
+USB mic3 ──► zita-a2j (mic3)        ──► mic3:capture_1   ─┤
+USB mic4 ──► zita-a2j (mic4)        ──► mic4:capture_1   ─┘
+```
+
+- `jackd` runs capture-only on MIC1 (master clock): `-R -P70 --capture`
+- MIC2-4 bridged via `zita-a2j`; each bridge polled via `jack_lsp` before proceeding
+- `jack_capture` receives SIGINT to stop (never `-d` duration flag)
+- For >2 channels, `-f wav` is omitted (jack_capture auto-selects WAVE_EX format)
+
+---
+
+## USB Port Path Identification
+
+Mics are identified by USB port path (e.g., `1-1.2`), not card number.
+This means plugging in the same mic on the same port always maps to the same channel.
+
+```bash
+# Find port paths:
+ls -la /sys/class/sound/card*/device | grep -v '^total'
+# or:
+for c in /sys/class/sound/card[0-9]*; do
+    echo "Card $(basename $c | tr -dc '0-9'): $(basename $(readlink -f $c/device))"
+done
+```
 
 ---
 
 ## API Reference
 
-All `/api/*` routes return JSON and include `Cache-Control: no-store`.
-CORS is open (closed AP network).
+All `/api/*` routes return JSON with `Cache-Control: no-store`. CORS open.
 
-### `GET /`
-Serves the single-page UI (`app/static/index.html`).
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/` | Web UI (SPA) |
+| `GET` | `/api/health` | Health check |
+| `POST` | `/api/time` | Sync Pi clock from browser |
+| `GET` | `/api/status` | Full status (polled every 1 s) |
+| `POST` | `/api/start` | Start recording (body: `{"session":"take"}`) |
+| `POST` | `/api/stop` | Stop recording (SIGINT to jack_capture) |
+| `POST` | `/api/reset` | Clear ERROR state |
+| `GET` | `/api/recordings` | List recordings (newest first) |
+| `GET` | `/api/recordings/{name}/download` | Stream WAV file |
+| `DELETE` | `/api/recordings/{name}` | Delete WAV + sidecar |
+
+**State machine:** `IDLE → ARMING → RECORDING → STOPPING → IDLE` (+ `ERROR`)
 
 ---
 
-### `GET /api/status`
-Returns the full recorder status (polled by UI every second).
+## Mock Mode (Development)
 
-**Response:**
-```json
-{
-  "state": "IDLE",
-  "elapsed_seconds": 0.0,
-  "current_file": null,
-  "disk_free_mb": 12345.6,
-  "disk_total_mb": 238475.0,
-  "mics": [
-    {"port": "system:capture_1", "present": true},
-    {"port": "mic2:capture_1",   "present": true},
-    {"port": "mic3:capture_1",   "present": true},
-    {"port": "mic4:capture_1",   "present": true}
-  ],
-  "jack_alive": true,
-  "sample_rate": 16000,
-  "xruns": 0,
-  "pi_time": "2024-11-15T14:32:01",
-  "error": null,
-  "countdown_beeps": 3
-}
+```bash
+FIELDREC_MOCK=1 uvicorn app.main:app --port 8080 --reload
 ```
 
-**States:** `IDLE` → `ARMING` → `RECORDING` → `STOPPING` → `IDLE` (+ `ERROR`)
+- All JACK/ALSA/aplay calls stubbed
+- Tones generated as silent WAVs in a tmpdir
+- Recordings written to tmpdir
+- Full state machine cycle works end-to-end
+- **MOCK** badge visible in UI header
 
 ---
 
-### `POST /api/start`
-Start a recording. Only allowed from `IDLE`.
+## Sidecar JSON
 
-**Body:**
-```json
-{ "session": "scene01", "countdown_beeps": 3 }
-```
-Both fields optional. `session` becomes the filename suffix (default: `take`).
-
-**Returns:** status object
-
-**Errors:**
-- `409` if not IDLE or pre-flight failed (body contains `detail` with reason)
-
----
-
-### `POST /api/stop`
-Stop the current recording. Only allowed from `RECORDING`.
-
-**Returns:** status object  
-**Error:** `409` if not RECORDING
-
----
-
-### `POST /api/reset`
-Force-clear an `ERROR` state back to `IDLE`.
-
-**Returns:** status object
-
----
-
-### `POST /api/time`
-Set the Pi system clock from client time (called automatically by UI on load).
-
-**Body:** `{ "epoch_ms": 1700000000000 }`
-
-**Returns:** `{ "ok": true, "pi_time": "..." }`
-
-Requires sudoers rule: `rec ALL=(root) NOPASSWD: /usr/bin/date -s *`
-
----
-
-### `GET /api/recordings`
-List all recordings, newest first.
-
-**Returns:**
-```json
-[
-  {
-    "name": "20241115_143201_scene01.wav",
-    "size_mb": 7.32,
-    "duration_s": 120.5,
-    "channels": 4,
-    "created": "2024-11-15T14:32:01",
-    "downloaded": false
-  }
-]
-```
-
----
-
-### `GET /api/recordings/{name}/download`
-Stream a WAV file with correct `Content-Length` (browser shows progress bar).
-Marks `downloaded: true` in the sidecar JSON after a complete transfer.
-
----
-
-### `DELETE /api/recordings/{name}`
-Delete a WAV and its `.json` sidecar. Path-traversal-safe.
-
-**Returns:** `{ "deleted": "filename.wav" }`
-
----
-
-### `GET /api/health`
-Quick health check (suitable for monitoring / load-balancer probes).
-
-**Returns:**
-```json
-{ "ok": true, "jack": true, "mics_present": 4, "disk_free_mb": 12345.6, "mock": false }
-```
-
----
-
-## Sidecar JSON format
-
-Each recording `NAME.wav` has a `NAME.json` sidecar:
+Each `session.wav` has a `session.json` sidecar:
 
 ```json
 {
-  "start_time": "2024-11-15T14:32:01.123",
-  "duration_s": 120.456,
-  "channels": 4,
-  "sample_rate": 16000,
-  "go_tone_wall_time": "2024-11-15T14:32:05.234",
-  "go_tone_offset_note": "GO tone played ~4.11s after capture started. Use in-band audio transient for precise per-recorder sync.",
+  "file": "20241115T143201Z_take.wav",
+  "start_time_utc": "2024-11-15T14:32:01+00:00",
+  "go_tone_utc": "2024-11-15T14:32:05.234+00:00",
+  "go_tone_offset_s": 4.11,
+  "sample_rate": "48000",
+  "channels": "4",
+  "bit_depth": "16",
   "downloaded": false
 }
 ```
 
-Use the in-band GO tone (1320 Hz, ~700 ms) to align multiple recorders in post.
+Use `go_tone_offset_s` (seconds into the recording when the GO tone fired) together
+with the in-band 1320 Hz transient to align multiple recorders in post.
 
 ---
 
@@ -271,17 +182,19 @@ Use the in-band GO tone (1320 Hz, ~700 ms) to align multiple recorders in post.
 
 | Symptom | Check |
 |---|---|
-| Pre-flight: "JACK ports not live" | `systemctl status audio-sync.service` and `jack_lsp` |
-| Pre-flight: "Disk too full" | `df -h /mnt/ssd` |
-| No cue tones | Check `out_device` in `config.yaml` vs `aplay -L` |
-| Time set fails | Verify sudoers rule and that `/usr/bin/date` path is correct |
-| Service won't start | `journalctl -u fieldrec-web.service -n 50` |
+| JACK ports not live | `systemctl status audio-sync` · `jack_lsp` |
+| zita-a2j bridge missing | `journalctl -u audio-sync -n 50` |
+| No cue tones | `OUT_DEVICE` in conf · `aplay -L` |
+| Disk full warning | `df -h "$RECORDINGS_DIR"` |
+| Time sync fails | Sudoers rule: `/etc/sudoers.d/fieldrec-date` |
+| Web service won't start | `journalctl -u fieldrec-web -n 50` |
+| Mic on wrong channel | `sudo ./install.sh --enroll` to re-enroll |
 
 ---
 
-## Development notes
+## Uninstall
 
-- The process never crashes on recording/tone errors — captures them, sets `ERROR`, logs, keeps serving.
-- Path traversal is prevented by stripping all directory components from `{name}` route params.
-- `jack_lsp` output is cached for 2 s; `xruns` (journalctl) cached for 15 s to keep the status endpoint cheap.
-- The UI recovers gracefully from connection drops (retries every second).
+```bash
+sudo ./uninstall.sh           # remove services + /opt/fieldrec
+sudo ./uninstall.sh --purge   # also delete recordings and /etc/fieldrec
+```
