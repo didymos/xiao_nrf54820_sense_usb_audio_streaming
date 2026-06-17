@@ -59,7 +59,7 @@ jackd \
     -n "$JACK_NPERIODS" \
     -c 1 \
     --capture \
-    >> "$LOGFILE" 2>&1 &
+    2>&1 &
 JACKD_PID=$!
 
 # Wait for JACK to become ready
@@ -96,7 +96,7 @@ for port in "${MIC_PORT_ARRAY[@]:1}"; do
         -d "hw:${card_num}" \
         -r "$SAMPLE_RATE" \
         -p "$JACK_FRAMES" \
-        >> "$LOGFILE" 2>&1 &
+        2>&1 &
 
     # Poll jack_lsp for the bridge port
     local_port="${bridge_name}:capture_1"
