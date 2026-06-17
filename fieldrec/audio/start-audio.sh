@@ -49,13 +49,13 @@ sleep 0.5
 
 # ── Start jackd on dummy driver ───────────────────────────────────────────────
 # All mics go through zita-a2j so they share the same latency path.
-log "Starting jackd (dummy driver, rate=${SAMPLE_RATE} frames=${JACK_FRAMES} periods=${JACK_NPERIODS}) ..."
+log "Starting jackd (dummy driver, rate=${SAMPLE_RATE} frames=${JACK_FRAMES}) ..."
+# NOTE: the dummy driver has no -n/nperiods option (only -C -P -r -m -p -w).
 jackd \
     -R -P70 \
     -d dummy \
     -r "$SAMPLE_RATE" \
     -p "$JACK_FRAMES" \
-    -n "$JACK_NPERIODS" \
     2>&1 &
 JACKD_PID=$!
 
