@@ -57,8 +57,8 @@ jackd \
     -r "$SAMPLE_RATE" \
     -p "$JACK_FRAMES" \
     -n "$JACK_NPERIODS" \
-    -c 1 \
-    --capture \
+    -i 1 \
+    -C \
     2>&1 &
 JACKD_PID=$!
 
