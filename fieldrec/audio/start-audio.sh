@@ -5,13 +5,12 @@
 set -euo pipefail
 
 CONF="/etc/fieldrec/fieldrec.conf"
-LOGFILE="/var/log/fieldrec-audio.log"
 
-# ── Logging ───────────────────────────────────────────────────────────────────
-log()  { printf '[%s] [INFO]  %s\n'  "$(date '+%H:%M:%S')" "$*" | tee -a "$LOGFILE"; }
-ok()   { printf '[%s] [OK]    %s\n'  "$(date '+%H:%M:%S')" "$*" | tee -a "$LOGFILE"; }
-warn() { printf '[%s] [WARN]  %s\n'  "$(date '+%H:%M:%S')" "$*" | tee -a "$LOGFILE" >&2; }
-die()  { printf '[%s] [ERROR] %s\n'  "$(date '+%H:%M:%S')" "$*" | tee -a "$LOGFILE" >&2; exit 1; }
+# ── Logging — journald captures stdout/stderr via audio-sync.service ──────────
+log()  { printf '[%s] [INFO]  %s\n'  "$(date '+%H:%M:%S')" "$*"; }
+ok()   { printf '[%s] [OK]    %s\n'  "$(date '+%H:%M:%S')" "$*"; }
+warn() { printf '[%s] [WARN]  %s\n'  "$(date '+%H:%M:%S')" "$*" >&2; }
+die()  { printf '[%s] [ERROR] %s\n'  "$(date '+%H:%M:%S')" "$*" >&2; exit 1; }
 
 # ── Load config ───────────────────────────────────────────────────────────────
 [[ -f "$CONF" ]] || die "Config file not found: $CONF"
