@@ -1,7 +1,7 @@
 [Unit]
 Description=Field recording web controller
-After=audio-sync.service network-online.target
-Requires=audio-sync.service
+After=network-online.target
+Wants=audio-sync.service
 
 [Service]
 User=rec

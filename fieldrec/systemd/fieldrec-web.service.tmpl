@@ -1,0 +1,36 @@
+[Unit]
+Description=FieldRec Web Interface (FastAPI)
+Documentation=file:///opt/fieldrec/README.md
+After=network.target audio-sync.service
+Wants=audio-sync.service
+ConditionPathExists=/etc/fieldrec/fieldrec.conf
+
+[Service]
+Type=simple
+User=$TARGET_USER
+Group=audio
+WorkingDirectory=/opt/fieldrec/app
+Environment="HOME=$TARGET_HOME"
+Environment="PATH=/opt/fieldrec/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+
+ExecStart=/opt/fieldrec/.venv/bin/uvicorn app.main:app \
+    --host 0.0.0.0 \
+    --port 8080 \
+    --workers 1 \
+    --no-access-log
+
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=10
+
+LimitRTPRIO=95
+LimitMEMLOCK=infinity
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fieldrec-web
+
+[Install]
+WantedBy=multi-user.target

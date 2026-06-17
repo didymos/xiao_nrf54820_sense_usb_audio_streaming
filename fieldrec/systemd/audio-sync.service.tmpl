@@ -1,0 +1,34 @@
+[Unit]
+Description=FieldRec Audio Stack (JACK + zita-a2j bridges)
+Documentation=file:///opt/fieldrec/README.md
+After=network.target sound.target
+Wants=sound.target
+# Ensure PipeWire/PulseAudio are masked before we start
+ConditionPathExists=/etc/fieldrec/fieldrec.conf
+
+[Service]
+Type=simple
+User=$TARGET_USER
+Group=audio
+Environment="HOME=$TARGET_HOME"
+Environment="JACK_NO_AUDIO_RESERVATION=1"
+
+ExecStartPre=/bin/bash -c 'echo 0 > /proc/sys/kernel/printk || true'
+ExecStart=/opt/fieldrec/audio/start-audio.sh
+
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+TimeoutStopSec=10
+
+# Real-time scheduling
+LimitRTPRIO=95
+LimitMEMLOCK=infinity
+LimitNICE=-19
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=audio-sync
+
+[Install]
+WantedBy=multi-user.target
