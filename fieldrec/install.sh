@@ -115,11 +115,12 @@ JACK_MASTER_PORT="${MIC_PORT_ARRAY[0]}"
 
 log_ok "Enrolled ${#MIC_PORT_ARRAY[@]} mic(s): ${MIC_PORT_ARRAY[*]}"
 
-# Build JACK_PORTS string: first is system:capture_1, rest are mic2:capture_1 etc
-JACK_PORTS="system:capture_1"
-for (( i=1; i<${#MIC_PORT_ARRAY[@]}; i++ )); do
+# Build JACK_PORTS string: all mics go through zita-a2j (mic1 .. micN)
+JACK_PORTS=""
+for (( i=0; i<${#MIC_PORT_ARRAY[@]}; i++ )); do
     JACK_PORTS+=" mic$(( i+1 )):capture_1"
 done
+JACK_PORTS="${JACK_PORTS# }"  # trim leading space
 log_info "JACK_PORTS: $JACK_PORTS"
 
 # ── Step 6: Sample rate detection ─────────────────────────────────────────────

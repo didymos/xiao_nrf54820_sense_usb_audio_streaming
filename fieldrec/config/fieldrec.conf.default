@@ -9,15 +9,13 @@ RECORDINGS_DIR=/mnt/ssd/recordings
 TONES_DIR=/opt/fieldrec/tones
 
 # ── Audio hardware ────────────────────────────────────────────────────────────
-# USB port token for MIC1 (JACK master clock source).
+# Space-separated USB port tokens for all mics in channel order.
 # Find via: ls -la /sys/class/sound/card*/device (look at symlink target prefix)
-JACK_MASTER_PORT=1-1.1
-
-# Space-separated USB port tokens for all mics (including MIC1 first).
 MIC_PORTS="1-1.1 1-1.2 1-1.3 1-1.4"
 
 # JACK ports that jack_capture will record from (must match MIC_PORTS count).
-JACK_PORTS="system:capture_1 mic2:capture_1 mic3:capture_1 mic4:capture_1"
+# All mics go through zita-a2j (mic1..micN) for equal inter-channel latency.
+JACK_PORTS="mic1:capture_1 mic2:capture_1 mic3:capture_1 mic4:capture_1"
 
 # Number of channels to record (1–N matching MIC_PORTS/JACK_PORTS count).
 CHANNELS=4

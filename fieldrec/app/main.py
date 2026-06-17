@@ -77,7 +77,7 @@ def load_config(path: str = CONF_PATH) -> dict[str, str]:
 
 _MOCK_DEFAULTS: dict[str, str] = {
     "CHANNELS": "4",
-    "JACK_PORTS": "system:capture_1 mic2:capture_1 mic3:capture_1 mic4:capture_1",
+    "JACK_PORTS": "mic1:capture_1 mic2:capture_1 mic3:capture_1 mic4:capture_1",
     "MIC_PORTS": "1-1.1 1-1.2 1-1.3 1-1.4",
     "SAMPLE_RATE": "48000",
     "BIT_DEPTH": "16",
