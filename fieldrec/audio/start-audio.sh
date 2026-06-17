@@ -96,6 +96,7 @@ for port in "${MIC_PORT_ARRAY[@]:1}"; do
         -d "hw:${card_num}" \
         -r "$SAMPLE_RATE" \
         -p "$JACK_FRAMES" \
+        -c 1 \
         2>&1 &
 
     # Poll jack_lsp for the bridge port
