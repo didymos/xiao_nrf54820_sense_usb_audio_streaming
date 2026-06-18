@@ -13,7 +13,6 @@ Group=audio
 Environment="HOME=$TARGET_HOME"
 Environment="JACK_NO_AUDIO_RESERVATION=1"
 
-ExecStartPre=/bin/bash -c 'echo 0 > /proc/sys/kernel/printk || true'
 ExecStart=/opt/fieldrec/audio/start-audio.sh
 
 Restart=on-failure

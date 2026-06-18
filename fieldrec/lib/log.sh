@@ -19,8 +19,8 @@ _log_raw() {
     local msg="$*"
     local ts
     ts="$(date '+%Y-%m-%d %H:%M:%S')"
-    # Always write to stdout/stderr (already colored)
-    printf "%s\n" "$msg"
+    # Always write to stderr — keeps stdout clean for $() capture in install.sh
+    printf "%s\n" "$msg" >&2
     # Write plain text to logfile if set
     if [[ -n "$LOGFILE" ]]; then
         local plain

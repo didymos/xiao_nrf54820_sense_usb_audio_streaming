@@ -147,7 +147,7 @@ detect_sample_rate_for_port() {
         return 0
     }
 
-    local preferred_rates=(48000 44100 96000 88200 32000)
+    local preferred_rates=(48000 44100 96000 88200 32000 22050 16000 8000)
     local hw_params
     hw_params="$(arecord -D "hw:${card_num}" --dump-hw-params 2>&1 || true)"
 

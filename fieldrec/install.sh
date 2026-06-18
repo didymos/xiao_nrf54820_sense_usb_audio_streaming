@@ -115,11 +115,12 @@ JACK_MASTER_PORT="${MIC_PORT_ARRAY[0]}"
 
 log_ok "Enrolled ${#MIC_PORT_ARRAY[@]} mic(s): ${MIC_PORT_ARRAY[*]}"
 
-# Build JACK_PORTS string: first is system:capture_1, rest are mic2:capture_1 etc
-JACK_PORTS="system:capture_1"
-for (( i=1; i<${#MIC_PORT_ARRAY[@]}; i++ )); do
+# Build JACK_PORTS string: all mics go through zita-a2j (mic1 .. micN)
+JACK_PORTS=""
+for (( i=0; i<${#MIC_PORT_ARRAY[@]}; i++ )); do
     JACK_PORTS+=" mic$(( i+1 )):capture_1"
 done
+JACK_PORTS="${JACK_PORTS# }"  # trim leading space
 log_info "JACK_PORTS: $JACK_PORTS"
 
 # ── Step 6: Sample rate detection ─────────────────────────────────────────────
@@ -153,23 +154,13 @@ setup_recordings_dir "$RECORDINGS_DIR" "$TARGET_USER"
 log_section "Step 8: Output device detection"
 OUT_DEVICE="$(detect_output_device)"
 
-# ── Step 9: Generate tones ────────────────────────────────────────────────────
-log_section "Step 9: Generating tone files"
+# ── Step 9: Tones directory ───────────────────────────────────────────────────
+log_section "Step 9: Preparing tones directory"
+# Tones are now generated in Python at runtime (numpy sine waves piped to aplay).
+# The tones/ directory is still copied to /opt/fieldrec/ for make_tones.py reference.
 TONES_DIR="/opt/fieldrec/tones"
 mkdir -p "$TONES_DIR"
-
-if python3 -c "import numpy, soundfile" &>/dev/null; then
-    python3 "$SCRIPT_DIR/tones/make_tones.py" "$TONES_DIR" \
-        && log_ok "Tones generated in $TONES_DIR" \
-        || log_warn "Tone generation failed — trying pip install first"
-fi
-
-if ! ls "$TONES_DIR"/go.wav &>/dev/null; then
-    log_info "Installing tone deps with pip ..."
-    pip3 install -q numpy soundfile >> "$LOGFILE" 2>&1 || true
-    python3 "$SCRIPT_DIR/tones/make_tones.py" "$TONES_DIR" >> "$LOGFILE" 2>&1 \
-        || log_warn "Tone generation failed — tones dir may be incomplete"
-fi
+log_ok "Tones dir ready (runtime generation — no WAV files needed)"
 
 # ── Step 10: Write /etc/fieldrec/fieldrec.conf ───────────────────────────────
 log_section "Step 10: Writing configuration"
@@ -204,8 +195,8 @@ HOTSPOT_SSID=FieldRec
 HOTSPOT_PASS=fieldrecpass
 CONFEOF
 
-chmod 640 /etc/fieldrec/fieldrec.conf
-chown root:"$TARGET_USER" /etc/fieldrec/fieldrec.conf
+chmod 644 /etc/fieldrec/fieldrec.conf
+chown root:root /etc/fieldrec/fieldrec.conf
 log_ok "Config written to /etc/fieldrec/fieldrec.conf"
 
 # ── Step 11: Deploy application files ────────────────────────────────────────
