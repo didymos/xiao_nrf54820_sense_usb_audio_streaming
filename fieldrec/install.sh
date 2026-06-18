@@ -154,23 +154,13 @@ setup_recordings_dir "$RECORDINGS_DIR" "$TARGET_USER"
 log_section "Step 8: Output device detection"
 OUT_DEVICE="$(detect_output_device)"
 
-# ── Step 9: Generate tones ────────────────────────────────────────────────────
-log_section "Step 9: Generating tone files"
+# ── Step 9: Tones directory ───────────────────────────────────────────────────
+log_section "Step 9: Preparing tones directory"
+# Tones are now generated in Python at runtime (numpy sine waves piped to aplay).
+# The tones/ directory is still copied to /opt/fieldrec/ for make_tones.py reference.
 TONES_DIR="/opt/fieldrec/tones"
 mkdir -p "$TONES_DIR"
-
-if python3 -c "import numpy, soundfile" &>/dev/null; then
-    python3 "$SCRIPT_DIR/tones/make_tones.py" "$TONES_DIR" \
-        && log_ok "Tones generated in $TONES_DIR" \
-        || log_warn "Tone generation failed — trying pip install first"
-fi
-
-if ! ls "$TONES_DIR"/go.wav &>/dev/null; then
-    log_info "Installing tone deps with pip ..."
-    pip3 install -q numpy soundfile >> "$LOGFILE" 2>&1 || true
-    python3 "$SCRIPT_DIR/tones/make_tones.py" "$TONES_DIR" >> "$LOGFILE" 2>&1 \
-        || log_warn "Tone generation failed — tones dir may be incomplete"
-fi
+log_ok "Tones dir ready (runtime generation — no WAV files needed)"
 
 # ── Step 10: Write /etc/fieldrec/fieldrec.conf ───────────────────────────────
 log_section "Step 10: Writing configuration"
