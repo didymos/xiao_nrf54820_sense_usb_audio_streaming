@@ -58,7 +58,6 @@
     font-weight: 600;
     letter-spacing: 0.05em;
   }
-
   .badge.mock-badge {
     background: #2a200a;
     border-color: #5a3a00;
@@ -73,7 +72,7 @@
     margin-bottom: 12px;
   }
 
-  /* ── Connection lost banner ────────────────────────────────────────────────── */
+  /* ── Connection lost banner ──────────────────────────────────────────────── */
   #conn-banner {
     display: none;
     background: #3a1800;
@@ -86,7 +85,7 @@
     color: #e8a060;
   }
 
-  /* ── Error banner ──────────────────────────────────────────────────────────── */
+  /* ── Error banner ────────────────────────────────────────────────────────── */
   #error-banner {
     display: none;
     background: #2a0000;
@@ -99,18 +98,14 @@
   #error-banner strong { display: block; margin-bottom: 4px; color: #e06060; font-size: 0.9rem; }
   #error-text { color: #c08080; word-break: break-word; }
 
-  /* ── Study protocol card ───────────────────────────────────────────────────── */
+  /* ── Study protocol ──────────────────────────────────────────────────────── */
   .proto-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
     margin-bottom: 10px;
   }
-  .proto-actions {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-  }
+  .proto-actions { display: flex; gap: 6px; align-items: center; }
   #proto-progress {
     font-size: 0.78rem;
     font-weight: 700;
@@ -119,9 +114,7 @@
     text-transform: uppercase;
     margin-bottom: 8px;
   }
-  #proto-progress .proto-num {
-    color: var(--text);
-  }
+  #proto-progress .proto-num { color: var(--text); }
   #proto-desc {
     font-size: 0.92rem;
     line-height: 1.55;
@@ -138,13 +131,12 @@
     text-align: center;
     padding: 6px 0;
   }
-  /* Highlight description box during recording */
   .recording-active #proto-desc {
     border-color: #5a2020;
     background: #1e1414;
   }
 
-  /* ── Main action button ────────────────────────────────────────────────────── */
+  /* ── Main action button ──────────────────────────────────────────────────── */
   #main-btn {
     width: 100%;
     padding: 24px 0;
@@ -166,18 +158,15 @@
   }
   #main-btn:active:not(:disabled) { transform: scale(0.96); }
   #main-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
   #main-btn.idle      { background: var(--green);    color: #fff; }
   #main-btn.arming    { background: var(--amber);    color: #fff; }
   #main-btn.recording { background: var(--red);      color: #fff; }
   #main-btn.stopping  { background: #444;            color: #aaa; }
   #main-btn.error     { background: var(--dark-red); color: #eee; }
 
-  /* Pulse animation dot */
   .pulse-dot {
     display: inline-block;
-    width: 16px;
-    height: 16px;
+    width: 16px; height: 16px;
     border-radius: 50%;
     background: rgba(255,255,255,0.9);
     animation: pulse 1.1s ease-in-out infinite;
@@ -187,12 +176,9 @@
     0%, 100% { opacity: 1; transform: scale(1); }
     50%       { opacity: 0.25; transform: scale(0.65); }
   }
-
-  /* Spinner */
   .spinner {
     display: inline-block;
-    width: 20px;
-    height: 20px;
+    width: 20px; height: 20px;
     border: 3px solid rgba(255,255,255,0.25);
     border-top-color: rgba(255,255,255,0.85);
     border-radius: 50%;
@@ -201,7 +187,7 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* ── Timer display ─────────────────────────────────────────────────────────── */
+  /* ── Timer ───────────────────────────────────────────────────────────────── */
   #timer {
     text-align: center;
     font-size: 3.2rem;
@@ -217,10 +203,10 @@
     justify-content: center;
     transition: color 0.2s;
   }
-  #timer.active-arm  { color: var(--amber); }
-  #timer.active-rec  { color: #e08080; }
+  #timer.active-arm { color: var(--amber); }
+  #timer.active-rec { color: #e08080; }
 
-  /* ── Session name input ────────────────────────────────────────────────────── */
+  /* ── Session name input ──────────────────────────────────────────────────── */
   .field-label {
     font-size: 0.74rem;
     color: var(--muted);
@@ -243,57 +229,94 @@
   input[type="text"]:focus { border-color: var(--blue); }
   input[type="text"]:disabled { opacity: 0.5; cursor: not-allowed; }
 
-  /* ── Microphone dots ───────────────────────────────────────────────────────── */
-  .mic-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 8px;
-  }
-  .mic-cell {
+  /* ── Mic selection list ──────────────────────────────────────────────────── */
+  .card-header-row {
     display: flex;
-    flex-direction: column;
+    justify-content: space-between;
     align-items: center;
-    gap: 7px;
-    padding: 12px 6px 10px;
+    margin-bottom: 12px;
+  }
+  .mic-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 11px;
     background: var(--surface2);
     border: 1px solid var(--border);
-    border-radius: 9px;
+    border-radius: 8px;
+    margin-bottom: 7px;
+    transition: border-color 0.15s, background 0.15s;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
   }
-  .mic-dot {
-    width: 20px;
-    height: 20px;
+  .mic-row:last-child { margin-bottom: 0; }
+  .mic-row.mic-selected { border-color: #2a5a2a; background: #161e16; }
+  .mic-row-check {
+    width: 18px; height: 18px;
+    cursor: pointer;
+    flex-shrink: 0;
+    accent-color: var(--green);
+  }
+  .ch-badge {
+    font-size: 0.68rem;
+    font-weight: 700;
+    background: #1a3a1a;
+    border: 1px solid #2a5a2a;
+    color: var(--green);
+    border-radius: 4px;
+    padding: 2px 6px;
+    min-width: 36px;
+    text-align: center;
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+    transition: opacity 0.15s;
+  }
+  .ch-badge.ch-empty {
+    background: transparent;
+    border-color: transparent;
+    color: transparent;
+  }
+  .mic-status-dot {
+    width: 9px; height: 9px;
     border-radius: 50%;
-    background: #3a1a1a;
-    border: 2px solid #5a2a2a;
+    background: #5a1a1a;
+    border: 1.5px solid #7a2a2a;
+    flex-shrink: 0;
     transition: background 0.3s, border-color 0.3s;
   }
-  .mic-dot.ok {
-    background: var(--green);
-    border-color: #3ecc71;
+  .mic-status-dot.ok { background: var(--green); border-color: #3ecc71; }
+  .mic-info { flex: 1; min-width: 0; }
+  .mic-jack-name {
+    font-size: 0.88rem;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-  .mic-label-text {
-    font-size: 0.72rem;
+  .mic-usb-port {
+    font-size: 0.7rem;
     color: var(--muted);
-    font-weight: 700;
-    letter-spacing: 0.04em;
+    margin-top: 1px;
+  }
+  #mic-empty {
+    font-size: 0.82rem;
+    color: var(--muted);
+    text-align: center;
+    padding: 10px 0;
   }
 
-  /* ── Disk bar ──────────────────────────────────────────────────────────────── */
+  /* ── Disk bar ────────────────────────────────────────────────────────────── */
   .disk-header {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
     margin-bottom: 6px;
   }
-  .disk-free-val {
-    font-size: 1.25rem;
-    font-weight: 700;
-    transition: color 0.3s;
-  }
+  .disk-free-val { font-size: 1.25rem; font-weight: 700; transition: color 0.3s; }
   .disk-total-val { font-size: 0.78rem; color: var(--muted); }
   .disk-track {
-    width: 100%;
-    height: 9px;
+    width: 100%; height: 9px;
     background: #2a2a2a;
     border-radius: 5px;
     overflow: hidden;
@@ -306,10 +329,9 @@
     transition: width 0.5s ease, background 0.4s;
   }
 
-  /* ── JACK / status row ─────────────────────────────────────────────────────── */
+  /* ── JACK / status row ───────────────────────────────────────────────────── */
   .status-row {
     display: flex;
-    gap: 0;
     align-items: center;
     font-size: 0.76rem;
     flex-wrap: wrap;
@@ -325,8 +347,7 @@
     padding: 4px 9px;
   }
   .status-dot {
-    width: 8px;
-    height: 8px;
+    width: 8px; height: 8px;
     border-radius: 50%;
     background: #5a1a1a;
     flex-shrink: 0;
@@ -335,7 +356,7 @@
   .status-dot.ok   { background: var(--green); }
   .status-dot.warn { background: var(--amber); }
 
-  /* ── Recordings list ───────────────────────────────────────────────────────── */
+  /* ── Recordings list ─────────────────────────────────────────────────────── */
   #rec-section { margin-top: 4px; }
   #rec-section h2 {
     font-size: 0.78rem;
@@ -372,12 +393,7 @@
     margin-left: 6px;
     vertical-align: middle;
   }
-  .rec-actions {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    flex-shrink: 0;
-  }
+  .rec-actions { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
   .btn-sm {
     padding: 7px 13px;
     border: 1px solid var(--border);
@@ -405,13 +421,8 @@
     padding: 24px 0;
   }
 
-  /* ── Footer ────────────────────────────────────────────────────────────────── */
-  #footer {
-    font-size: 0.68rem;
-    color: #444;
-    text-align: center;
-    margin-top: 16px;
-  }
+  /* ── Footer ──────────────────────────────────────────────────────────────── */
+  #footer { font-size: 0.68rem; color: #444; text-align: center; margin-top: 16px; }
 </style>
 </head>
 <body>
@@ -421,17 +432,15 @@
   <span class="badge mock-badge" id="mock-badge" style="display:none">MOCK</span>
 </h1>
 
-<!-- Connection lost -->
 <div id="conn-banner">&#9888; Connection lost — retrying&hellip;</div>
 
-<!-- Error -->
 <div id="error-banner">
   <strong>Error</strong>
   <span id="error-text"></span>
 </div>
 
 <!-- Study Protocol -->
-<div class="card" id="protocol-card">
+<div class="card">
   <div class="proto-header">
     <div class="field-label" style="margin-bottom:0">Study Protocol</div>
     <div class="proto-actions">
@@ -461,12 +470,18 @@
   </div>
 </div>
 
-<!-- Microphones -->
+<!-- Mic selection -->
 <div class="card">
-  <div class="field-label" style="margin-bottom:10px">Microphones</div>
-  <div class="mic-grid" id="mic-grid">
-    <!-- dynamically filled -->
+  <div class="card-header-row">
+    <div class="field-label" style="margin-bottom:0">
+      Channels&nbsp;<span id="ch-count" style="color:var(--text);font-weight:400;font-size:0.85rem"></span>
+    </div>
+    <div style="display:flex;gap:6px">
+      <button class="btn-sm" id="mics-all-btn" onclick="micToggleAll()" style="display:none">All</button>
+      <button class="btn-sm btn-dl" id="mics-apply-btn" onclick="applyMicSelection()" disabled style="display:none">Apply</button>
+    </div>
   </div>
+  <div id="mic-list"><div id="mic-empty">Waiting for JACK&hellip;</div></div>
 </div>
 
 <!-- Disk + JACK -->
@@ -481,12 +496,8 @@
       <span class="status-dot" id="jack-dot"></span>
       <span id="jack-label">JACK</span>
     </span>
-    <span class="status-chip">
-      <span id="xruns-val">xruns: —</span>
-    </span>
-    <span class="status-chip">
-      <span id="sr-val">— Hz</span>
-    </span>
+    <span class="status-chip"><span id="xruns-val">xruns: —</span></span>
+    <span class="status-chip"><span id="sr-val">— Hz</span></span>
   </div>
 </div>
 
@@ -503,19 +514,22 @@
   "use strict";
 
   // ── State ──────────────────────────────────────────────────────────────────
-  let lastState = "IDLE";
-  let prevState = "IDLE";
+  let lastState    = "IDLE";
+  let prevState    = "IDLE";
   let connErrCount = 0;
-  let minFreeMb = 500;
   let countdownBeeps = 3;
-  let micCount = 4;
+  let minFreeMb    = 500;
 
-  // Protocol state (mirrors server)
-  let protoTotal = 0;
-  let protoIndex = 0;
-  let protoEntry = null;
-  // Whether the user has manually edited the session input for this slot
+  // Protocol
+  let protoTotal   = 0;
+  let protoIndex   = 0;
+  let protoEntry   = null;
   let sessionEdited = false;
+
+  // Mic selection
+  let serverRecordingPorts = [];   // what the server currently records
+  let serverAvailable      = [];   // all JACK capture ports on server
+  let micDirty             = false; // user has uncommitted changes
 
   // ── Init ───────────────────────────────────────────────────────────────────
   fetch("/api/time", {
@@ -524,16 +538,10 @@
     body: JSON.stringify({ client_ms: Date.now() }),
   }).catch(() => {});
 
-  fetch("/api/health")
-    .then(r => r.json())
-    .then(h => {
-      if (h.mock) document.getElementById("mock-badge").style.display = "";
-    })
-    .catch(() => {});
+  fetch("/api/health").then(r => r.json()).then(h => {
+    if (h.mock) document.getElementById("mock-badge").style.display = "";
+  }).catch(() => {});
 
-  buildMicGrid(4);
-
-  // Track whether the user is actively typing in the session input
   document.getElementById("session-input").addEventListener("input", () => {
     sessionEdited = true;
   });
@@ -541,10 +549,7 @@
   // ── Polling ────────────────────────────────────────────────────────────────
   function poll() {
     fetch("/api/status", { cache: "no-store" })
-      .then(r => {
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        return r.json();
-      })
+      .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
       .then(data => {
         connErrCount = 0;
         document.getElementById("conn-banner").style.display = "none";
@@ -552,12 +557,9 @@
       })
       .catch(() => {
         connErrCount++;
-        if (connErrCount >= 2) {
-          document.getElementById("conn-banner").style.display = "block";
-        }
+        if (connErrCount >= 2) document.getElementById("conn-banner").style.display = "block";
       });
   }
-
   poll();
   setInterval(poll, 1000);
 
@@ -569,17 +571,19 @@
 
     updateButton(d);
     updateTimer(d);
-    updateMics(d.mics || []);
     updateDisk(d);
     updateJack(d);
     updateFooter(d);
     updateError(d);
     updateProtocol(d.protocol);
+    updateMicSelection(
+      d.available_capture_ports || [],
+      d.recording_ports         || [],
+      d.usb_by_jack             || {}
+    );
 
-    // On return to IDLE: reload recordings and auto-fill session from new protocol entry
     if (prevState !== "IDLE" && lastState === "IDLE") {
       setTimeout(loadRecordings, 600);
-      // Auto-fill session name if user hasn't manually overridden
       if (!sessionEdited && d.protocol && d.protocol.entry) {
         document.getElementById("session-input").value = d.protocol.entry.suffix;
       }
@@ -590,23 +594,18 @@
   // ── Button ─────────────────────────────────────────────────────────────────
   function updateButton(d) {
     const btn = document.getElementById("main-btn");
-    const state = d.state;
-
-    btn.className = state.toLowerCase();
-
-    switch (state) {
+    btn.className = d.state.toLowerCase();
+    switch (d.state) {
       case "IDLE":
         btn.disabled = false;
         btn.innerHTML = "START";
         break;
       case "ARMING": {
         btn.disabled = true;
-        const beepsLeft = Math.max(0, countdownBeeps - Math.floor(d.elapsed_seconds));
-        if (beepsLeft > 0) {
-          btn.innerHTML = `<span class="spinner"></span><span>${beepsLeft}</span>`;
-        } else {
-          btn.innerHTML = `<span class="spinner"></span><span>Starting&hellip;</span>`;
-        }
+        const bl = Math.max(0, countdownBeeps - Math.floor(d.elapsed_seconds));
+        btn.innerHTML = bl > 0
+          ? `<span class="spinner"></span><span>${bl}</span>`
+          : `<span class="spinner"></span><span>Starting&hellip;</span>`;
         break;
       }
       case "RECORDING":
@@ -622,28 +621,22 @@
         btn.innerHTML = "Reset";
         break;
       default:
-        btn.innerHTML = state;
+        btn.innerHTML = d.state;
     }
-
-    // Mark body for CSS-based recording state (protocol desc highlighting)
-    document.body.classList.toggle("recording-active", state === "RECORDING");
+    document.body.classList.toggle("recording-active", d.state === "RECORDING");
   }
 
   // ── Timer ──────────────────────────────────────────────────────────────────
   function updateTimer(d) {
     const el = document.getElementById("timer");
-    const state = d.state;
     const elapsed = d.elapsed_seconds || 0;
-
-    if (state === "RECORDING") {
+    if (d.state === "RECORDING") {
       const s = Math.floor(elapsed);
-      const mm = String(Math.floor(s / 60)).padStart(2, "0");
-      const ss = String(s % 60).padStart(2, "0");
-      el.textContent = `${mm}:${ss}`;
+      el.textContent = String(Math.floor(s / 60)).padStart(2,"0") + ":" + String(s % 60).padStart(2,"0");
       el.className = "active-rec";
-    } else if (state === "ARMING") {
-      const beepsLeft = Math.max(0, countdownBeeps - Math.floor(elapsed));
-      el.textContent = beepsLeft > 0 ? String(beepsLeft) : "…";
+    } else if (d.state === "ARMING") {
+      const bl = Math.max(0, countdownBeeps - Math.floor(elapsed));
+      el.textContent = bl > 0 ? String(bl) : "…";
       el.className = "active-arm";
     } else {
       el.textContent = "—";
@@ -651,33 +644,138 @@
     }
   }
 
-  // ── Mics ───────────────────────────────────────────────────────────────────
-  function buildMicGrid(n) {
-    const grid = document.getElementById("mic-grid");
-    grid.innerHTML = "";
-    for (let i = 0; i < n; i++) {
-      const cell = document.createElement("div");
-      cell.className = "mic-cell";
-      cell.innerHTML = `
-        <div class="mic-dot" id="mic-dot-${i}" title="MIC${i+1}"></div>
-        <div class="mic-label-text">MIC${i+1}</div>
-      `;
-      grid.appendChild(cell);
+  // ── Mic selection ──────────────────────────────────────────────────────────
+  function updateMicSelection(available, recording, usbByJack) {
+    serverAvailable      = available.slice();
+    serverRecordingPorts = recording.slice();
+
+    const listEl  = document.getElementById("mic-list");
+    const allBtn  = document.getElementById("mics-all-btn");
+    const applyBtn = document.getElementById("mics-apply-btn");
+
+    if (available.length === 0) {
+      listEl.innerHTML = '<div id="mic-empty">Waiting for JACK&hellip;</div>';
+      allBtn.style.display  = "none";
+      applyBtn.style.display = "none";
+      document.getElementById("ch-count").textContent = "";
+      return;
     }
-    micCount = n;
+
+    allBtn.style.display  = "";
+    applyBtn.style.display = "";
+
+    // Only re-render if not dirty (to preserve user's pending changes)
+    if (!micDirty) {
+      renderMicList(available, recording, usbByJack);
+    } else {
+      // Just refresh presence dots without resetting checkboxes
+      available.forEach(port => {
+        const dot = document.getElementById("micdot-" + esc(port));
+        if (dot) dot.classList.add("ok");
+      });
+      refreshChBadges();
+    }
   }
 
-  function updateMics(mics) {
-    if (mics.length !== micCount) {
-      buildMicGrid(mics.length || 4);
-    }
-    mics.forEach((m, i) => {
-      const dot = document.getElementById("mic-dot-" + i);
-      if (!dot) return;
-      dot.classList.toggle("ok", !!m.present);
-      dot.title = `MIC${i+1}` + (m.usb_port ? ` (${m.usb_port})` : "") + (m.present ? " ✓" : " ✗");
-    });
+  function renderMicList(available, recording, usbByJack) {
+    const listEl = document.getElementById("mic-list");
+    listEl.innerHTML = available.map(port => {
+      const sel  = recording.includes(port);
+      const usb  = usbByJack[port] || "";
+      const name = port.split(":")[0];
+      return `
+<div class="mic-row${sel ? ' mic-selected' : ''}" id="microw-${esc(port)}"
+     onclick="micRowClick('${esc(port)}')">
+  <input type="checkbox" class="mic-row-check" id="micchk-${esc(port)}"
+         ${sel ? "checked" : ""} onclick="event.stopPropagation()"
+         onchange="onMicChange('${esc(port)}')">
+  <span class="ch-badge ch-empty" id="micch-${esc(port)}">CH1</span>
+  <span class="mic-status-dot ok" id="micdot-${esc(port)}"></span>
+  <div class="mic-info">
+    <div class="mic-jack-name">${esc(name)}</div>
+    ${usb ? `<div class="mic-usb-port">${esc(usb)}</div>` : ""}
+  </div>
+</div>`;
+    }).join("");
+
+    refreshChBadges();
+    micDirty = false;
+    document.getElementById("mics-apply-btn").disabled = true;
   }
+
+  function micRowClick(port) {
+    const chk = document.getElementById("micchk-" + port);
+    if (!chk) return;
+    chk.checked = !chk.checked;
+    onMicChange(port);
+  }
+
+  function onMicChange(port) {
+    const chk = document.getElementById("micchk-" + port);
+    const row = document.getElementById("microw-" + port);
+    if (chk && row) row.classList.toggle("mic-selected", chk.checked);
+    refreshChBadges();
+    micDirty = localSelected().join(",") !== serverRecordingPorts.join(",");
+    document.getElementById("mics-apply-btn").disabled = !micDirty;
+  }
+
+  function refreshChBadges() {
+    let ch = 1;
+    document.querySelectorAll(".mic-row-check").forEach(chk => {
+      const port  = chk.id.replace("micchk-", "");
+      const badge = document.getElementById("micch-" + port);
+      if (!badge) return;
+      if (chk.checked) {
+        badge.textContent = "CH" + ch++;
+        badge.classList.remove("ch-empty");
+      } else {
+        badge.textContent = "CH1";
+        badge.classList.add("ch-empty");
+      }
+    });
+    const n = document.querySelectorAll(".mic-row-check:checked").length;
+    document.getElementById("ch-count").textContent = n > 0 ? `(${n})` : "";
+  }
+
+  function localSelected() {
+    return [...document.querySelectorAll(".mic-row-check")]
+      .filter(c => c.checked)
+      .map(c => c.id.replace("micchk-", ""));
+  }
+
+  window.micToggleAll = function () {
+    const checks = [...document.querySelectorAll(".mic-row-check")];
+    const allOn  = checks.every(c => c.checked);
+    checks.forEach(c => {
+      c.checked = !allOn;
+      const port = c.id.replace("micchk-", "");
+      const row  = document.getElementById("microw-" + port);
+      if (row) row.classList.toggle("mic-selected", !allOn);
+    });
+    refreshChBadges();
+    micDirty = localSelected().join(",") !== serverRecordingPorts.join(",");
+    document.getElementById("mics-apply-btn").disabled = !micDirty;
+  };
+
+  window.applyMicSelection = function () {
+    const ports = localSelected();
+    if (ports.length === 0) { showError("Select at least one channel."); return; }
+    const btn = document.getElementById("mics-apply-btn");
+    btn.disabled = true;
+    btn.textContent = "…";
+    fetch("/api/mics/select", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ports }),
+    })
+    .then(r => r.json().then(b => ({ ok: r.ok, b })))
+    .then(({ ok, b }) => {
+      btn.textContent = "Apply";
+      if (ok) { serverRecordingPorts = b.selected; micDirty = false; }
+      else { showError("Mic select failed: " + (b.detail || "error")); btn.disabled = false; }
+    })
+    .catch(e => { showError("Network: " + e); btn.textContent = "Apply"; btn.disabled = false; });
+  };
 
   // ── Disk ───────────────────────────────────────────────────────────────────
   function updateDisk(d) {
@@ -685,51 +783,92 @@
     const totalMb = d.disk_total_mb || 0;
     const freeGb  = (freeMb  / 1024).toFixed(1);
     const totalGb = (totalMb / 1024).toFixed(1);
-
-    const freeEl = document.getElementById("disk-free");
-    const fillEl = document.getElementById("disk-fill");
-
-    freeEl.textContent = `${freeGb} GB`;
+    document.getElementById("disk-free").textContent  = `${freeGb} GB`;
     document.getElementById("disk-total").textContent = `free of ${totalGb} GB`;
-
     const usedPct = totalMb > 0 ? ((totalMb - freeMb) / totalMb) * 100 : 0;
-    fillEl.style.width = Math.min(100, usedPct).toFixed(1) + "%";
-
-    let color;
-    if (freeMb < minFreeMb) {
-      color = "var(--red)";
-    } else if (freeMb < 2048) {
-      color = "var(--amber)";
-    } else {
-      color = "var(--green)";
-    }
-    freeEl.style.color = color;
-    fillEl.style.background = color;
+    document.getElementById("disk-fill").style.width = Math.min(100, usedPct).toFixed(1) + "%";
+    const color = freeMb < minFreeMb ? "var(--red)" : freeMb < 2048 ? "var(--amber)" : "var(--green)";
+    document.getElementById("disk-free").style.color = color;
+    document.getElementById("disk-fill").style.background = color;
   }
 
   // ── JACK ───────────────────────────────────────────────────────────────────
   function updateJack(d) {
-    const dot   = document.getElementById("jack-dot");
-    const label = document.getElementById("jack-label");
     const alive = !!d.jack_alive;
-
-    dot.classList.toggle("ok",   alive);
-    dot.classList.toggle("warn", !alive);
-    label.textContent = alive ? "JACK" : "JACK offline";
-
+    document.getElementById("jack-dot").classList.toggle("ok",   alive);
+    document.getElementById("jack-dot").classList.toggle("warn", !alive);
+    document.getElementById("jack-label").textContent = alive ? "JACK" : "JACK offline";
     const xr = d.xruns;
     document.getElementById("xruns-val").textContent =
-      (xr === null || xr === undefined || xr < 0) ? "xruns: n/a" : `xruns: ${xr}`;
-
-    document.getElementById("sr-val").textContent =
-      d.sample_rate ? `${d.sample_rate} Hz` : "— Hz";
+      (xr == null || xr < 0) ? "xruns: n/a" : `xruns: ${xr}`;
+    document.getElementById("sr-val").textContent = d.sample_rate ? `${d.sample_rate} Hz` : "— Hz";
   }
+
+  // ── Protocol ───────────────────────────────────────────────────────────────
+  function updateProtocol(proto) {
+    if (!proto) proto = { entry: null, current_index: 0, total: 0 };
+    const prevEntry = protoEntry;
+    protoTotal  = proto.total  || 0;
+    protoIndex  = proto.current_index || 0;
+    protoEntry  = proto.entry  || null;
+
+    const noneEl   = document.getElementById("proto-none");
+    const loadedEl = document.getElementById("proto-loaded");
+    const clearBtn = document.getElementById("proto-clear-btn");
+
+    if (!protoEntry) {
+      noneEl.style.display   = "";
+      loadedEl.style.display = "none";
+      clearBtn.style.display = "none";
+      return;
+    }
+    noneEl.style.display   = "none";
+    loadedEl.style.display = "";
+    clearBtn.style.display = "";
+
+    document.getElementById("proto-progress").innerHTML =
+      `<span class="proto-num">${protoIndex + 1} of ${protoTotal}</span> &mdash; ${esc(protoEntry.title)}`;
+    document.getElementById("proto-desc").textContent = protoEntry.description || "(no description)";
+
+    if (prevEntry === null || (prevEntry && prevEntry.number !== protoEntry.number)) {
+      if (!sessionEdited && lastState === "IDLE") {
+        document.getElementById("session-input").value = protoEntry.suffix;
+      }
+    }
+  }
+
+  window.uploadProtocol = function (input) {
+    const file = input.files[0];
+    if (!file) return;
+    input.value = "";
+    const fd = new FormData();
+    fd.append("file", file);
+    fetch("/api/protocol", { method: "POST", body: fd })
+      .then(r => r.json().then(b => ({ ok: r.ok, b })))
+      .then(({ ok, b }) => {
+        if (!ok) showError("Protocol upload failed: " + (b.detail || "error"));
+        else {
+          protoEntry = null;
+          sessionEdited = false;
+          updateProtocol({ entry: b.entries[0] || null, current_index: 0, total: b.total });
+        }
+      })
+      .catch(e => showError("Network: " + e));
+  };
+
+  window.clearProtocol = function () {
+    fetch("/api/protocol", { method: "DELETE" }).then(() => {
+      protoEntry = null; protoTotal = 0; sessionEdited = false;
+      updateProtocol({ entry: null, current_index: 0, total: 0 });
+      document.getElementById("session-input").value = "";
+    }).catch(() => {});
+  };
 
   // ── Footer / pi time ───────────────────────────────────────────────────────
   function updateFooter(d) {
-    const el = document.getElementById("footer");
     if (d.pi_time) {
-      el.textContent = "Pi: " + d.pi_time.replace("T", " ").slice(0, 19) + " UTC";
+      document.getElementById("footer").textContent =
+        "Pi: " + d.pi_time.replace("T", " ").slice(0, 19) + " UTC";
     }
   }
 
@@ -746,96 +885,15 @@
     input.disabled = (d.state !== "IDLE");
   }
 
-  // ── Protocol ───────────────────────────────────────────────────────────────
-  function updateProtocol(proto) {
-    if (!proto) proto = { entry: null, current_index: 0, total: 0 };
-
-    const prevEntry = protoEntry;
-    protoTotal   = proto.total   || 0;
-    protoIndex   = proto.current_index || 0;
-    protoEntry   = proto.entry   || null;
-
-    const noneEl   = document.getElementById("proto-none");
-    const loadedEl = document.getElementById("proto-loaded");
-    const clearBtn = document.getElementById("proto-clear-btn");
-
-    if (!protoEntry) {
-      noneEl.style.display   = "";
-      loadedEl.style.display = "none";
-      clearBtn.style.display = "none";
-      return;
-    }
-
-    noneEl.style.display   = "none";
-    loadedEl.style.display = "";
-    clearBtn.style.display = "";
-
-    document.getElementById("proto-progress").innerHTML =
-      `<span class="proto-num">${protoIndex + 1} of ${protoTotal}</span>` +
-      ` &mdash; ${esc(protoEntry.title)}`;
-
-    const descEl = document.getElementById("proto-desc");
-    descEl.textContent = protoEntry.description || "(no description)";
-
-    // Auto-fill session input when protocol entry changes and user hasn't edited
-    if (prevEntry === null || (prevEntry && prevEntry.number !== protoEntry.number)) {
-      if (!sessionEdited && lastState === "IDLE") {
-        document.getElementById("session-input").value = protoEntry.suffix;
-      }
-    }
-  }
-
-  // ── Protocol upload ────────────────────────────────────────────────────────
-  window.uploadProtocol = function (input) {
-    const file = input.files[0];
-    if (!file) return;
-    input.value = "";  // allow re-upload of same file
-
-    const fd = new FormData();
-    fd.append("file", file);
-
-    fetch("/api/protocol", { method: "POST", body: fd })
-      .then(r => r.json().then(body => ({ ok: r.ok, body })))
-      .then(({ ok, body }) => {
-        if (!ok) {
-          showError("Protocol upload failed: " + (body.detail || "unknown error"));
-        } else {
-          // Immediately reflect new protocol
-          protoEntry = null;  // force auto-fill on next updateProtocol
-          sessionEdited = false;
-          updateProtocol({ entries: body.entries, current_index: 0, total: body.total,
-                           entry: body.entries[0] || null });
-        }
-      })
-      .catch(e => showError("Network: " + e));
-  };
-
-  window.clearProtocol = function () {
-    fetch("/api/protocol", { method: "DELETE" })
-      .then(() => {
-        protoEntry = null;
-        protoTotal = 0;
-        sessionEdited = false;
-        updateProtocol({ entry: null, current_index: 0, total: 0 });
-        document.getElementById("session-input").value = "";
-      })
-      .catch(() => {});
-  };
-
   // ── Button handler ─────────────────────────────────────────────────────────
   window.handleMainBtn = function () {
-    if (lastState === "IDLE") {
-      doStart();
-    } else if (lastState === "RECORDING") {
-      doStop();
-    } else if (lastState === "ERROR") {
-      doReset();
-    }
+    if (lastState === "IDLE")      doStart();
+    else if (lastState === "RECORDING") doStop();
+    else if (lastState === "ERROR")     doReset();
   };
 
   function doStart() {
     let session = document.getElementById("session-input").value.trim();
-    // Fall back to protocol suffix if session is empty and protocol is loaded
     if (!session && protoEntry) session = protoEntry.suffix;
     if (!session) session = "take";
     fetch("/api/start", {
@@ -843,27 +901,21 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session }),
     })
-      .then(r => r.json().then(body => ({ ok: r.ok, body })))
-      .then(({ ok, body }) => {
-        if (!ok) showError(body.detail || "Start failed");
-      })
-      .catch(e => showError("Network: " + e));
+    .then(r => r.json().then(b => ({ ok: r.ok, b })))
+    .then(({ ok, b }) => { if (!ok) showError(b.detail || "Start failed"); })
+    .catch(e => showError("Network: " + e));
   }
 
   function doStop() {
     fetch("/api/stop", { method: "POST" })
-      .then(r => r.json().then(body => ({ ok: r.ok, body })))
-      .then(({ ok, body }) => {
-        if (!ok) showError(body.detail || "Stop failed");
-      })
+      .then(r => r.json().then(b => ({ ok: r.ok, b })))
+      .then(({ ok, b }) => { if (!ok) showError(b.detail || "Stop failed"); })
       .catch(e => showError("Network: " + e));
   }
 
   function doReset() {
     fetch("/api/reset", { method: "POST" })
-      .then(r => r.json())
-      .then(d => updateUI(d))
-      .catch(() => {});
+      .then(r => r.json()).then(d => updateUI(d)).catch(() => {});
   }
 
   function showError(msg) {
@@ -874,64 +926,44 @@
   // ── Recordings ─────────────────────────────────────────────────────────────
   function loadRecordings() {
     fetch("/api/recordings", { cache: "no-store" })
-      .then(r => r.json())
-      .then(renderRecordings)
-      .catch(() => {});
+      .then(r => r.json()).then(renderRecordings).catch(() => {});
   }
-
   loadRecordings();
   setInterval(loadRecordings, 15000);
 
   function fmtDuration(s) {
     if (!s || s <= 0) return "0s";
-    const m = Math.floor(s / 60);
-    const sec = Math.floor(s % 60);
+    const m = Math.floor(s / 60), sec = Math.floor(s % 60);
     return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
   }
-
   function fmtSize(bytes) {
     if (!bytes) return "0 B";
-    if (bytes < 1048576) return (bytes / 1024).toFixed(0) + " KB";
-    return (bytes / 1048576).toFixed(1) + " MB";
+    return bytes < 1048576 ? (bytes/1024).toFixed(0)+" KB" : (bytes/1048576).toFixed(1)+" MB";
   }
-
-  function fmtTs(iso) {
-    if (!iso) return "";
-    return iso.replace("T", " ").slice(0, 19);
-  }
-
+  function fmtTs(iso) { return iso ? iso.replace("T"," ").slice(0,19) : ""; }
   function esc(s) {
     return String(s)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
+      .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+      .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
   }
 
   function renderRecordings(list) {
     const el = document.getElementById("rec-list");
     if (!list || list.length === 0) {
-      el.innerHTML = '<div id="no-recs">No recordings yet.</div>';
-      return;
+      el.innerHTML = '<div id="no-recs">No recordings yet.</div>'; return;
     }
     el.innerHTML = list.map(r => {
-      const dlBadge = r.downloaded
-        ? `<span class="dl-badge">&#10003; downloaded</span>`
-        : "";
+      const dlBadge = r.downloaded ? `<span class="dl-badge">&#10003; downloaded</span>` : "";
+      const ch = r.sidecar && r.sidecar.channels ? ` &middot; ${r.sidecar.channels}ch` : "";
       const protoTitle = r.sidecar && r.sidecar.protocol_entry
-        ? ` &middot; ${esc(r.sidecar.protocol_entry.title)}`
-        : "";
-      const meta = [
-        fmtDuration(r.duration_s),
-        fmtSize(r.size_bytes),
-        fmtTs(r.timestamp || r.created),
-      ].filter(Boolean).join(" &middot; ");
+        ? ` &middot; ${esc(r.sidecar.protocol_entry.title)}` : "";
+      const meta = [fmtDuration(r.duration_s), fmtSize(r.size_bytes), fmtTs(r.timestamp||r.created)]
+        .filter(Boolean).join(" &middot;");
       return `
 <div class="rec-item" id="rec-${esc(r.name)}">
   <div class="rec-info">
     <div class="rec-name">${esc(r.name)}${dlBadge}</div>
-    <div class="rec-meta">${meta}${protoTitle}</div>
+    <div class="rec-meta">${meta}${ch}${protoTitle}</div>
   </div>
   <div class="rec-actions">
     <button class="btn-sm btn-dl" onclick="dlRec('${esc(r.name)}',this)">Download</button>
@@ -942,42 +974,23 @@
   }
 
   window.dlRec = function (name, btn) {
-    btn.disabled = true;
-    btn.textContent = "…";
+    btn.disabled = true; btn.textContent = "…";
     const a = document.createElement("a");
     a.href = "/api/recordings/" + encodeURIComponent(name) + "/download";
     a.download = name;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => {
-      btn.disabled = false;
-      btn.textContent = "Download";
-      loadRecordings();
-    }, 1500);
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => { btn.disabled=false; btn.textContent="Download"; loadRecordings(); }, 1500);
   };
 
   window.delRec = function (name, btn) {
     if (!confirm("Delete recording:\n" + name + "\n\nThis cannot be undone.")) return;
-    btn.disabled = true;
-    btn.textContent = "…";
+    btn.disabled = true; btn.textContent = "…";
     fetch("/api/recordings/" + encodeURIComponent(name), { method: "DELETE" })
       .then(r => {
-        if (r.ok) {
-          const item = document.getElementById("rec-" + name);
-          if (item) item.remove();
-          loadRecordings();
-        } else {
-          r.json().then(b => showError(b.detail || "Delete failed")).catch(() => {});
-          btn.disabled = false;
-          btn.textContent = "Delete";
-        }
+        if (r.ok) { document.getElementById("rec-"+name)?.remove(); loadRecordings(); }
+        else { r.json().then(b => showError(b.detail||"Delete failed")).catch(()=>{}); btn.disabled=false; btn.textContent="Delete"; }
       })
-      .catch(e => {
-        showError("Network: " + e);
-        btn.disabled = false;
-        btn.textContent = "Delete";
-      });
+      .catch(e => { showError("Network: "+e); btn.disabled=false; btn.textContent="Delete"; });
   };
 
 })();

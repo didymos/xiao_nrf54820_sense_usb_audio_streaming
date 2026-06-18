@@ -292,6 +292,21 @@ def get_disk_stats(path: str) -> tuple[float, float]:
         return 0.0, 0.0
 
 
+# ── Mic selection ─────────────────────────────────────────────────────────────
+# Empty list means "use JACK_PORTS from config". Set via /api/mics/select.
+_mic_selection: dict[str, Any] = {"ports": []}
+_mic_selection_lock = threading.Lock()
+
+
+def get_active_ports() -> list[str]:
+    """Return the active recording port list, falling back to config JACK_PORTS."""
+    with _mic_selection_lock:
+        sel = _mic_selection["ports"]
+        if sel:
+            return list(sel)
+    return cfg("JACK_PORTS", "").split()
+
+
 # ── Study protocol ────────────────────────────────────────────────────────────
 _protocol_state: dict[str, Any] = {"entries": [], "index": 0}
 _protocol_lock = threading.Lock()
@@ -407,13 +422,9 @@ class RecorderController:
         - -f wav only for <=2 channels; omit for >2 (auto-selects wavex)
         - no --duration flag
         """
-        try:
-            channels = int(cfg("CHANNELS", "1"))
-        except ValueError:
-            channels = 1
+        ports = get_active_ports()
+        channels = len(ports)
         bit_depth = cfg("BIT_DEPTH", "16")
-        jack_ports_str = cfg("JACK_PORTS", "system:capture_1")
-        ports = jack_ports_str.split()
 
         cmd = ["jack_capture", "-b", bit_depth]
 
@@ -431,10 +442,11 @@ class RecorderController:
         """Return error string if not ready to record, else None."""
         if not jack_alive():
             return "JACK server is not running"
-        ports = set(cached_jack_lsp())
-        jack_ports_str = cfg("JACK_PORTS", "system:capture_1")
-        required = jack_ports_str.split()
-        missing = [p for p in required if p not in ports]
+        active = set(cached_jack_lsp())
+        recording = get_active_ports()
+        if not recording:
+            return "No recording channels selected"
+        missing = [p for p in recording if p not in active]
         if missing:
             return f"JACK ports not live: {missing}"
         rec_dir = _get_recordings_dir()
@@ -613,6 +625,7 @@ class RecorderController:
                 )
                 # Capture current protocol entry before advancing
                 proto = _get_protocol_snapshot()
+                recorded_ports = get_active_ports()
                 sidecar: dict[str, Any] = {
                     "file": out_path.name,
                     "start_time_utc": (
@@ -625,7 +638,8 @@ class RecorderController:
                     ),
                     "go_tone_offset_s": round(go_offset, 4) if go_offset is not None else None,
                     "sample_rate": cfg("SAMPLE_RATE", "48000"),
-                    "channels": cfg("CHANNELS", "1"),
+                    "channels": len(recorded_ports),
+                    "jack_ports": recorded_ports,
                     "bit_depth": cfg("BIT_DEPTH", "16"),
                     "downloaded": False,
                 }
@@ -711,20 +725,41 @@ class RecorderController:
         required_ports = jack_ports_str.split()
         mic_ports_str = conf.get("MIC_PORTS", "")
         mic_ports = mic_ports_str.split() if mic_ports_str else []
-        active_ports = set(cached_jack_lsp())
+        all_lsp = cached_jack_lsp()
+        active_ports = set(all_lsp)
         is_jack_alive = bool(active_ports) or MOCK_MODE
+
+        recording_ports = get_active_ports()
+        recording_ports_set = set(recording_ports)
+
+        # All JACK capture ports visible right now
+        available_capture = sorted(
+            p for p in active_ports if "capture" in p.lower()
+        )
+        if MOCK_MODE and not available_capture:
+            available_capture = recording_ports
 
         if not mic_ports and required_ports:
             mic_ports = [f"mock-{i+1}" for i in range(len(required_ports))]
 
+        # Build usb_port lookup from config order
+        usb_by_jack: dict[str, str] = {}
+        for i, up in enumerate(mic_ports):
+            jp = required_ports[i] if i < len(required_ports) else ""
+            if jp:
+                usb_by_jack[jp] = up
+
         mics: list[dict[str, Any]] = []
         for i, usb_port in enumerate(mic_ports, 1):
             jack_port = required_ports[i - 1] if i - 1 < len(required_ports) else ""
+            ch = (recording_ports.index(jack_port) + 1) if jack_port in recording_ports_set else None
             mics.append({
                 "index": i,
                 "usb_port": usb_port,
                 "jack_port": jack_port,
                 "present": jack_port in active_ports if not MOCK_MODE else True,
+                "recording": jack_port in recording_ports_set,
+                "channel": ch,
             })
 
         rec_dir = _get_recordings_dir()
@@ -745,6 +780,9 @@ class RecorderController:
             "countdown_beeps": int(conf.get("COUNTDOWN_BEEPS", "3")),
             "mock": MOCK_MODE,
             "protocol": _get_protocol_snapshot(),
+            "recording_ports": recording_ports,
+            "available_capture_ports": available_capture,
+            "usb_by_jack": usb_by_jack,
         }
 
 
@@ -857,6 +895,46 @@ async def api_stop() -> dict[str, str]:
 async def api_reset() -> dict:
     controller.reset()
     return controller.get_status()
+
+
+# ── Mic selection endpoints ───────────────────────────────────────────────────
+
+@app.get("/api/mics")
+async def api_mics() -> dict[str, Any]:
+    available = sorted(p for p in cached_jack_lsp() if "capture" in p.lower())
+    if MOCK_MODE and not available:
+        available = get_active_ports()
+    selected = get_active_ports()
+    return {"available": available, "selected": selected, "channels": len(selected)}
+
+
+class MicSelectReq(BaseModel):
+    ports: list[str]
+
+
+@app.post("/api/mics/select")
+async def api_mics_select(req: MicSelectReq) -> dict[str, Any]:
+    if not req.ports:
+        raise HTTPException(status_code=400, detail="Select at least one port")
+    if not MOCK_MODE:
+        available = set(cached_jack_lsp())
+        invalid = [p for p in req.ports if p not in available]
+        if invalid:
+            raise HTTPException(status_code=400, detail=f"Ports not in JACK: {invalid}")
+    with _mic_selection_lock:
+        _mic_selection["ports"] = list(req.ports)
+    log.info("Mic selection: %s", req.ports)
+    return {"selected": req.ports, "channels": len(req.ports)}
+
+
+@app.delete("/api/mics/select")
+async def api_mics_reset() -> dict[str, Any]:
+    """Reset to config default (JACK_PORTS)."""
+    with _mic_selection_lock:
+        _mic_selection["ports"] = []
+    default = cfg("JACK_PORTS", "").split()
+    log.info("Mic selection reset to config default: %s", default)
+    return {"selected": default, "channels": len(default)}
 
 
 # ── Protocol endpoints ────────────────────────────────────────────────────────
