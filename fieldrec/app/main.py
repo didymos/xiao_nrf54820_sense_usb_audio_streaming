@@ -27,7 +27,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+import numpy as np
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -84,7 +85,6 @@ _MOCK_DEFAULTS: dict[str, str] = {
     "COUNTDOWN_BEEPS": "3",
     "MIN_FREE_MB": "500",
     "OUT_DEVICE": "plughw:CARD=Device",
-    "TONES_DIR": "",
 }
 
 _cfg: Optional[dict[str, str]] = None
@@ -127,20 +127,6 @@ def _mock_recordings_dir() -> str:
     return d
 
 
-def _mock_tones_dir() -> str:
-    """Generate minimal silent WAV tone stubs in tmpdir."""
-    d = os.path.join(_get_mock_tmpdir(), "tones")
-    os.makedirs(d, exist_ok=True)
-    for name in (
-        "go", "stop", "saved", "error",
-        *[f"countdown_{i}" for i in range(8)],
-    ):
-        path = os.path.join(d, f"{name}.wav")
-        if not os.path.exists(path):
-            _write_silent_wav(path, duration_ms=200)
-    return d
-
-
 def _write_silent_wav(path: str, duration_ms: int = 200, sr: int = 48000) -> None:
     n_frames = sr * duration_ms // 1000
     with wave.open(path, "w") as wf:
@@ -148,6 +134,88 @@ def _write_silent_wav(path: str, duration_ms: int = 200, sr: int = 48000) -> Non
         wf.setsampwidth(2)
         wf.setframerate(sr)
         wf.writeframes(b"\x00\x00" * n_frames)
+
+
+# ── Tone generation ───────────────────────────────────────────────────────────
+# Each entry is a list of (freq_hz, duration_s) segments played in sequence.
+_TONE_SPECS: dict[str, list[tuple[float, float]]] = {
+    "go":    [(1320.0, 0.70)],
+    "stop":  [(880.0,  0.40)],
+    "saved": [(880.0,  0.15), (1100.0, 0.15)],
+    "error": [(300.0,  0.15), (200.0,  0.15)],
+    **{f"countdown_{i}": [(660.0 + i * 110.0, 0.20)] for i in range(8)},
+}
+
+_TONE_SR = 48000  # Hz for output device
+
+
+def _generate_tone_pcm(freq: float, duration_s: float, sr: int = _TONE_SR) -> bytes:
+    n = max(1, int(sr * duration_s))
+    t = np.linspace(0.0, duration_s, n, endpoint=False)
+    wave_arr = np.sin(2.0 * np.pi * freq * t) * 0.65
+    # 10ms fade-in/out to avoid clicks
+    fade = min(int(sr * 0.010), n // 4)
+    if fade > 0:
+        wave_arr[:fade] *= np.linspace(0.0, 1.0, fade)
+        wave_arr[n - fade:] *= np.linspace(1.0, 0.0, fade)
+    return (wave_arr * 32767.0).astype(np.int16).tobytes()
+
+
+def play_tone_sync(name: str) -> None:
+    """Generate and play a named tone via aplay. Blocking."""
+    specs = _TONE_SPECS.get(name)
+    if not specs:
+        log.warning("Unknown tone: %s", name)
+        return
+    if MOCK_MODE:
+        total = sum(d for _, d in specs)
+        log.info("MOCK tone: %s (%.2fs total)", name, total)
+        time.sleep(min(0.05, total))
+        return
+    out_device = cfg("OUT_DEVICE", "plughw:0")
+    for freq, dur in specs:
+        pcm = _generate_tone_pcm(freq, dur)
+        try:
+            subprocess.run(
+                ["aplay", "-D", out_device,
+                 "-r", str(_TONE_SR), "-c", "1", "-f", "S16_LE", "-"],
+                input=pcm,
+                capture_output=True,
+                timeout=dur + 5.0,
+            )
+        except Exception as exc:
+            log.warning("aplay failed (tone=%s freq=%.0f Hz): %s", name, freq, exc)
+
+
+def play_tone_bg(tone_name: str) -> None:
+    """Play a named tone in a background daemon thread."""
+    t = threading.Thread(target=play_tone_sync, args=(tone_name,), daemon=True)
+    t.start()
+
+
+def _get_recordings_dir() -> str:
+    if MOCK_MODE:
+        return _mock_recordings_dir()
+    return cfg("RECORDINGS_DIR", "/mnt/ssd/recordings")
+
+
+def _safe_filename(name: str) -> str:
+    """Sanitize session name to safe filesystem characters."""
+    name = re.sub(r"[^\w\-\.]", "_", name)
+    name = name.strip("._")
+    return (name[:80] if name else "session")
+
+
+def _path_traversal_check(base: str, filename: str) -> Path:
+    """Verify filename resolves inside base dir. Raises HTTPException on attack."""
+    bare = Path(filename).name
+    if not bare:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    safe = Path(base).resolve()
+    target = (safe / bare).resolve()
+    if not str(target).startswith(str(safe) + os.sep) and target != safe:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    return target
 
 
 # ── External command wrappers ─────────────────────────────────────────────────
@@ -224,64 +292,61 @@ def get_disk_stats(path: str) -> tuple[float, float]:
         return 0.0, 0.0
 
 
-def play_tone_sync(tone_path: str) -> None:
-    """Play a WAV tone via aplay (blocking). Never overlaps."""
-    if not os.path.exists(tone_path):
-        log.warning("Tone missing: %s", tone_path)
-        return
-    if MOCK_MODE:
-        log.info("MOCK aplay: %s", tone_path)
-        time.sleep(0.1)
-        return
-    out_device = cfg("OUT_DEVICE", "plughw:0")
-    try:
-        subprocess.run(
-            ["aplay", "-D", out_device, tone_path],
-            capture_output=True,
-            timeout=10,
-        )
-    except Exception as exc:
-        log.warning("aplay failed (%s): %s", os.path.basename(tone_path), exc)
+# ── Study protocol ────────────────────────────────────────────────────────────
+_protocol_state: dict[str, Any] = {"entries": [], "index": 0}
+_protocol_lock = threading.Lock()
 
 
-def play_tone_bg(tone_name: str) -> None:
-    """Play a named tone in a background daemon thread."""
-    tones = _get_tones_dir()
-    path = os.path.join(tones, f"{tone_name}.wav")
-    t = threading.Thread(target=play_tone_sync, args=(path,), daemon=True)
-    t.start()
+def parse_protocol(text: str) -> list[dict[str, Any]]:
+    """
+    Parse a Markdown study protocol into a list of recording entries.
+
+    Format:
+        ## Title of recording
+        Description / instructions for this recording.
+        Multiple lines are fine.
+
+        ## Next recording
+        Next instructions.
+
+    Returns list of {"number", "suffix", "title", "description"}.
+    """
+    entries: list[dict[str, Any]] = []
+    current_heading: Optional[str] = None
+    current_desc: list[str] = []
+
+    for line in text.splitlines():
+        if line.startswith("## "):
+            if current_heading is not None:
+                entries.append({
+                    "number": len(entries) + 1,
+                    "suffix": _safe_filename(current_heading),
+                    "title": current_heading,
+                    "description": "\n".join(current_desc).strip(),
+                })
+            current_heading = line[3:].strip()
+            current_desc = []
+        elif current_heading is not None and not line.startswith("# "):
+            current_desc.append(line)
+
+    if current_heading is not None:
+        entries.append({
+            "number": len(entries) + 1,
+            "suffix": _safe_filename(current_heading),
+            "title": current_heading,
+            "description": "\n".join(current_desc).strip(),
+        })
+    return entries
 
 
-def _get_recordings_dir() -> str:
-    if MOCK_MODE:
-        return _mock_recordings_dir()
-    return cfg("RECORDINGS_DIR", "/mnt/ssd/recordings")
-
-
-def _get_tones_dir() -> str:
-    if MOCK_MODE:
-        return _mock_tones_dir()
-    return cfg("TONES_DIR", "/opt/fieldrec/tones")
-
-
-def _safe_filename(name: str) -> str:
-    """Sanitize session name to safe filesystem characters."""
-    name = re.sub(r"[^\w\-\.]", "_", name)
-    name = name.strip("._")
-    return (name[:80] if name else "session")
-
-
-def _path_traversal_check(base: str, filename: str) -> Path:
-    """Verify filename resolves inside base dir. Raises HTTPException on attack."""
-    # Strip any path components — only the final filename is accepted
-    bare = Path(filename).name
-    if not bare:
-        raise HTTPException(status_code=400, detail="Invalid filename")
-    safe = Path(base).resolve()
-    target = (safe / bare).resolve()
-    if not str(target).startswith(str(safe) + os.sep) and target != safe:
-        raise HTTPException(status_code=400, detail="Invalid filename")
-    return target
+def _get_protocol_snapshot() -> dict[str, Any]:
+    with _protocol_lock:
+        entries = _protocol_state["entries"]
+        idx = _protocol_state["index"]
+        if not entries:
+            return {"entry": None, "current_index": 0, "total": 0}
+        entry = entries[idx] if idx < len(entries) else None
+        return {"entry": entry, "current_index": idx, "total": len(entries)}
 
 
 # ── State machine ─────────────────────────────────────────────────────────────
@@ -330,11 +395,8 @@ class RecorderController:
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _play_countdown(self, n: int) -> None:
-        tones_dir = _get_tones_dir()
         for i in range(n):
-            # countdown_0 is first (lowest pitch at 660 Hz)
-            path = os.path.join(tones_dir, f"countdown_{i}.wav")
-            play_tone_sync(path)
+            play_tone_sync(f"countdown_{i}")
             if i < n - 1:
                 time.sleep(0.8)
 
@@ -443,7 +505,6 @@ class RecorderController:
             out_path = os.path.join(rec_dir, out_filename)
 
             if MOCK_MODE:
-                # Write a small mock WAV, run in a thread that waits for stop signal
                 _write_silent_wav(out_path, duration_ms=1000)
                 proc = None
             else:
@@ -470,14 +531,12 @@ class RecorderController:
                         f"jack_capture failed to start (exit={proc.returncode}): "
                         f"{stderr.decode(errors='replace')[:200]}"
                     )
-                # Start monitor thread
                 threading.Thread(
                     target=self._monitor_proc,
                     args=(proc,),
                     daemon=True,
                 ).start()
 
-            # Record go-tone time and play it
             go_time = time.time()
 
             with self._lock:
@@ -488,9 +547,7 @@ class RecorderController:
                 self._recording_start_time = time.time()
                 self._set_state(State.RECORDING)
 
-            # Play go tone (blocks briefly — time offset is negligible at this sample rate)
-            tones_dir = _get_tones_dir()
-            play_tone_sync(os.path.join(tones_dir, "go.wav"))
+            play_tone_sync("go")
 
         except Exception as exc:
             log.exception("Arm sequence failed: %s", exc)
@@ -536,31 +593,27 @@ class RecorderController:
                     except subprocess.TimeoutExpired:
                         proc.kill()
 
-            # Play stop tone
-            tones_dir = _get_tones_dir()
-            play_tone_sync(os.path.join(tones_dir, "stop.wav"))
+            play_tone_sync("stop")
 
-            # Flush OS buffers
             try:
                 os.sync()
             except Exception:
                 pass
 
-            # Validate output file
             if MOCK_MODE:
-                # Mock: file is already written
                 pass
             elif out_path is None or not out_path.exists() or out_path.stat().st_size == 0:
                 raise RuntimeError(f"Output file missing or empty: {out_path}")
 
-            # Write sidecar JSON
             if out_path is not None:
                 go_offset = (
                     (go_tone_time - start_time)
                     if go_tone_time is not None and start_time is not None
                     else None
                 )
-                sidecar = {
+                # Capture current protocol entry before advancing
+                proto = _get_protocol_snapshot()
+                sidecar: dict[str, Any] = {
                     "file": out_path.name,
                     "start_time_utc": (
                         datetime.fromtimestamp(start_time, tz=timezone.utc).isoformat()
@@ -576,12 +629,25 @@ class RecorderController:
                     "bit_depth": cfg("BIT_DEPTH", "16"),
                     "downloaded": False,
                 }
+                if proto["entry"]:
+                    sidecar["protocol_entry"] = proto["entry"]
                 sidecar_path = out_path.with_suffix(".json")
                 sidecar_path.write_text(json.dumps(sidecar, indent=2))
                 log.info("Sidecar: %s", sidecar_path)
 
-            # Play saved tone
-            play_tone_sync(os.path.join(tones_dir, "saved.wav"))
+            play_tone_sync("saved")
+
+            # Auto-advance protocol to the next entry
+            with _protocol_lock:
+                entries = _protocol_state["entries"]
+                idx = _protocol_state["index"]
+                if entries and idx < len(entries) - 1:
+                    _protocol_state["index"] = idx + 1
+                    log.info(
+                        "Protocol advanced to entry %d/%d",
+                        _protocol_state["index"] + 1,
+                        len(entries),
+                    )
 
             with self._lock:
                 self._set_state(State.IDLE)
@@ -594,7 +660,6 @@ class RecorderController:
 
         except Exception as exc:
             log.exception("Stop sequence failed: %s", exc)
-            # Rename partial file
             if out_path and out_path.exists():
                 failed = out_path.with_name(out_path.name + ".FAILED")
                 try:
@@ -649,7 +714,6 @@ class RecorderController:
         active_ports = set(cached_jack_lsp())
         is_jack_alive = bool(active_ports) or MOCK_MODE
 
-        # If MIC_PORTS not configured, synthesise one entry per JACK port
         if not mic_ports and required_ports:
             mic_ports = [f"mock-{i+1}" for i in range(len(required_ports))]
 
@@ -680,6 +744,7 @@ class RecorderController:
             "error": error,
             "countdown_beeps": int(conf.get("COUNTDOWN_BEEPS", "3")),
             "mock": MOCK_MODE,
+            "protocol": _get_protocol_snapshot(),
         }
 
 
@@ -748,7 +813,6 @@ async def api_time(request: Request) -> dict[str, Any]:
     server_ms = int(time.time() * 1000)
     drift_ms = server_ms - client_ms if client_ms else 0
 
-    # Sync clock if drift > 5 s
     if abs(drift_ms) > 5000 and client_ms > 0 and not MOCK_MODE:
         try:
             epoch_s = client_ms / 1000.0
@@ -795,6 +859,58 @@ async def api_reset() -> dict:
     return controller.get_status()
 
 
+# ── Protocol endpoints ────────────────────────────────────────────────────────
+
+@app.post("/api/protocol")
+async def api_protocol_upload(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Upload a Markdown study protocol. Parses ## headings as recording entries."""
+    content = await file.read()
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        text = content.decode("latin-1", errors="replace")
+    entries = parse_protocol(text)
+    if not entries:
+        raise HTTPException(status_code=400, detail="No ## entries found in protocol file")
+    with _protocol_lock:
+        _protocol_state["entries"] = entries
+        _protocol_state["index"] = 0
+    log.info("Protocol loaded: %d entries from '%s'", len(entries), file.filename)
+    return {"entries": entries, "current_index": 0, "total": len(entries)}
+
+
+@app.get("/api/protocol/current")
+async def api_protocol_current() -> dict[str, Any]:
+    return _get_protocol_snapshot()
+
+
+@app.post("/api/protocol/advance")
+async def api_protocol_advance() -> dict[str, Any]:
+    with _protocol_lock:
+        entries = _protocol_state["entries"]
+        idx = _protocol_state["index"]
+        if entries and idx < len(entries) - 1:
+            _protocol_state["index"] = idx + 1
+        return _get_protocol_snapshot()
+
+
+@app.post("/api/protocol/reset")
+async def api_protocol_reset() -> dict[str, Any]:
+    with _protocol_lock:
+        _protocol_state["index"] = 0
+    return _get_protocol_snapshot()
+
+
+@app.delete("/api/protocol")
+async def api_protocol_clear() -> dict[str, Any]:
+    with _protocol_lock:
+        _protocol_state["entries"] = []
+        _protocol_state["index"] = 0
+    return {"entries": [], "current_index": 0, "total": 0}
+
+
+# ── Recordings endpoints ───────────────────────────────────────────────────────
+
 def _read_sidecar(wav_path: Path) -> dict[str, Any]:
     sc = wav_path.with_suffix(".json")
     if sc.exists():
@@ -808,12 +924,11 @@ def _read_sidecar(wav_path: Path) -> dict[str, Any]:
 def _recording_info(f: Path) -> dict[str, Any]:
     sc = _read_sidecar(f)
     stat = f.stat()
-    # Estimate duration from file size (WAV: size / (sr * ch * bytes_per_sample))
     try:
         sr = int(sc.get("sample_rate") or cfg("SAMPLE_RATE", "48000"))
         ch = int(sc.get("channels") or cfg("CHANNELS", "1"))
         bd = int(sc.get("bit_depth") or cfg("BIT_DEPTH", "16"))
-        data_bytes = max(0, stat.st_size - 44)  # subtract WAV header
+        data_bytes = max(0, stat.st_size - 44)
         duration_s = data_bytes / (sr * ch * (bd // 8)) if sr > 0 else 0.0
     except Exception:
         duration_s = 0.0
@@ -862,7 +977,6 @@ async def api_download(name: str) -> StreamingResponse:
         with open(target, "rb") as fh:
             while chunk := fh.read(65536):
                 yield chunk
-        # Mark as downloaded in sidecar
         sc = _read_sidecar(target)
         sc["downloaded"] = True
         try:
