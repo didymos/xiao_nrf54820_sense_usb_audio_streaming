@@ -409,12 +409,6 @@ class RecorderController:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _play_countdown(self, n: int) -> None:
-        for i in range(n):
-            play_tone_sync(f"countdown_{i}")
-            if i < n - 1:
-                time.sleep(0.8)
-
     def _build_capture_cmd(self, out_path: str) -> list[str]:
         """
         Build jack_capture command per constraints:
@@ -475,7 +469,12 @@ class RecorderController:
 
     # ── Public start/stop ─────────────────────────────────────────────────────
 
-    def start(self, session: str = "take") -> None:
+    def start_sync(self, session: str = "take") -> str:
+        """Block until jack_capture is confirmed running (~0.5 s).
+        Returns the output filename. Raises HTTPException on any failure.
+        Called from a sync FastAPI route (thread-pool) — safe to block."""
+        safe_session = _safe_filename(session) if session else "take"
+
         with self._lock:
             if self._state not in (State.IDLE, State.ERROR):
                 raise HTTPException(409, f"Cannot start: state is {self._state.value}")
@@ -484,36 +483,18 @@ class RecorderController:
             self._current_file = None
             self._current_path = None
             self._set_state(State.ARMING)
-            safe_session = _safe_filename(session) if session else "take"
 
-        threading.Thread(
-            target=self._arm_sequence,
-            args=(safe_session,),
-            daemon=True,
-        ).start()
-
-    def _arm_sequence(self, session: str) -> None:
         try:
             err = self._pre_flight()
             if err:
                 with self._lock:
                     self._set_state(State.ERROR, f"Pre-flight: {err}")
-                play_tone_bg("error")
-                return
+                raise HTTPException(422, f"Pre-flight check failed: {err}")
 
-            # Countdown beeps
-            try:
-                beeps = int(cfg("COUNTDOWN_BEEPS", "3"))
-            except ValueError:
-                beeps = 3
-            if beeps > 0:
-                self._play_countdown(beeps)
-
-            # Build output path
             ts = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             rec_dir = _get_recordings_dir()
             os.makedirs(rec_dir, exist_ok=True)
-            out_filename = f"{ts}_{session}.wav"
+            out_filename = f"{ts}_{safe_session}.wav"
             out_path = os.path.join(rec_dir, out_filename)
 
             if MOCK_MODE:
@@ -522,26 +503,29 @@ class RecorderController:
             else:
                 cmd = self._build_capture_cmd(out_path)
                 log.info("jack_capture: %s", " ".join(shlex.quote(c) for c in cmd))
-                # Hold stdin open with a pipe: jack_capture stops on Return/EOF,
-                # and under systemd stdin would be /dev/null (instant EOF). An
-                # open pipe we never write to keeps it recording until SIGINT.
+                # Hold stdin open so jack_capture doesn't get EOF under systemd
                 proc = subprocess.Popen(
                     cmd,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                 )
-                # Brief wait to detect immediate failure
                 time.sleep(0.5)
                 if proc.poll() is not None:
-                    stderr = b""
+                    stderr_bytes = b""
                     try:
-                        stderr = proc.stderr.read() if proc.stderr else b""
+                        stderr_bytes = proc.stderr.read() if proc.stderr else b""
                     except Exception:
                         pass
-                    raise RuntimeError(
-                        f"jack_capture failed to start (exit={proc.returncode}): "
-                        f"{stderr.decode(errors='replace')[:200]}"
+                    err_detail = stderr_bytes.decode(errors="replace")[:200]
+                    with self._lock:
+                        self._set_state(
+                            State.ERROR,
+                            f"jack_capture failed to start (exit={proc.returncode}): {err_detail}",
+                        )
+                    raise HTTPException(
+                        500,
+                        f"jack_capture failed to start (exit={proc.returncode}): {err_detail}",
                     )
                 threading.Thread(
                     target=self._monitor_proc,
@@ -559,14 +543,20 @@ class RecorderController:
                 self._recording_start_time = time.time()
                 self._set_state(State.RECORDING)
 
-            play_tone_sync("go")
+            # Fallback go-tone on OUT_DEVICE for headless/non-browser operation
+            play_tone_bg("go")
 
+            return out_filename
+
+        except HTTPException:
+            raise
         except Exception as exc:
-            log.exception("Arm sequence failed: %s", exc)
+            log.exception("Start failed: %s", exc)
             with self._lock:
                 self._set_state(State.ERROR, str(exc))
                 self._proc = None
             play_tone_bg("error")
+            raise HTTPException(500, f"Recording start failed: {exc}")
 
     def stop(self) -> None:
         with self._lock:
@@ -898,10 +888,12 @@ class StartReq(BaseModel):
 
 
 @app.post("/api/start")
-async def api_start(req: StartReq) -> dict[str, Any]:
+def api_start(req: StartReq) -> dict[str, Any]:
+    """Synchronous route (runs in thread pool). Blocks ~0.5 s until
+    jack_capture is confirmed running. Returns state=RECORDING on success."""
     session = (req.session or "take").strip() or "take"
-    controller.start(session)
-    return {"status": "arming", "session": session}
+    filename = controller.start_sync(session)
+    return {"state": "RECORDING", "file": filename, "session": session}
 
 
 @app.post("/api/stop")
