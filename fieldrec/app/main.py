@@ -78,11 +78,11 @@ def load_config(path: str = CONF_PATH) -> dict[str, str]:
 
 _MOCK_DEFAULTS: dict[str, str] = {
     "CHANNELS": "4",
-    "JACK_PORTS": "mic1:capture_1 mic2:capture_1 mic3:capture_1 mic4:capture_1",
-    "MIC_PORTS": "1-1.1 1-1.2 1-1.3 1-1.4",
-    "SAMPLE_RATE": "48000",
+    "JACK_PORTS": "Mic:capture_1 Mic_1:capture_1 Mic_2:capture_1 Mic_3:capture_1",
+    "MIC_PORTS": "3-1.1 3-1.2 3-1.3 3-1.4",
+    "SAMPLE_RATE": "16000",
     "BIT_DEPTH": "16",
-    "COUNTDOWN_BEEPS": "3",
+    "COUNTDOWN_BEEPS": "0",
     "MIN_FREE_MB": "500",
     "OUT_DEVICE": "plughw:CARD=Device",
 }
@@ -293,18 +293,61 @@ def get_disk_stats(path: str) -> tuple[float, float]:
 
 
 # ── Mic selection ─────────────────────────────────────────────────────────────
-# Empty list means "use JACK_PORTS from config". Set via /api/mics/select.
+# Empty list means "use the auto-detected mic default". Set via /api/mics/select.
 _mic_selection: dict[str, Any] = {"ports": []}
 _mic_selection_lock = threading.Lock()
 
+# JACK client names for XIAO mics look like "Mic", "Mic_1", "Mic_2", …
+_MIC_NAME_RE = re.compile(r"^Mic(_\d+)?$", re.IGNORECASE)
+
+
+def _natural_key(port: str) -> tuple[Any, ...]:
+    """Sort key so Mic < Mic_1 < Mic_2 < … < Mic_10 (numeric-aware)."""
+    return tuple(
+        int(tok) if tok.isdigit() else tok
+        for tok in re.split(r"(\d+)", port)
+    )
+
+
+def default_mic_ports() -> list[str]:
+    """Live capture ports whose JACK client is named like a mic (Mic, Mic_1, …),
+    naturally sorted. This is the default recording selection when the user
+    hasn't picked channels explicitly."""
+    mics = [
+        p for p in cached_jack_lsp()
+        if "capture" in p.lower() and _MIC_NAME_RE.match(p.split(":", 1)[0])
+    ]
+    return sorted(mics, key=_natural_key)
+
 
 def get_active_ports() -> list[str]:
-    """Return the active recording port list, falling back to config JACK_PORTS."""
+    """Return the active recording port list. Falls back to the auto-detected
+    mic default (all live Mic* capture ports) when nothing is selected."""
     with _mic_selection_lock:
         sel = _mic_selection["ports"]
         if sel:
             return list(sel)
-    return cfg("JACK_PORTS", "").split()
+    return default_mic_ports()
+
+
+def _usb_ports_by_cardid() -> dict[str, str]:
+    """Map each ALSA card id (sanitized like the JACK client name) to its
+    stable USB port token (e.g. "3-1.1"), for display in the web UI."""
+    result: dict[str, str] = {}
+    try:
+        for entry in sorted(Path("/sys/class/sound").glob("card[0-9]*")):
+            try:
+                card_id = (entry / "id").read_text().strip()
+                dev = os.path.realpath(str(entry / "device"))
+                port = os.path.basename(dev).split(":", 1)[0]
+            except Exception:
+                continue
+            if card_id and port:
+                safe = re.sub(r"[^A-Za-z0-9_]", "_", card_id)
+                result[safe] = port
+    except Exception:
+        pass
+    return result
 
 
 # ── Study protocol ────────────────────────────────────────────────────────────
@@ -409,12 +452,6 @@ class RecorderController:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _play_countdown(self, n: int) -> None:
-        for i in range(n):
-            play_tone_sync(f"countdown_{i}")
-            if i < n - 1:
-                time.sleep(0.8)
-
     def _build_capture_cmd(self, out_path: str) -> list[str]:
         """
         Build jack_capture command per constraints:
@@ -475,7 +512,12 @@ class RecorderController:
 
     # ── Public start/stop ─────────────────────────────────────────────────────
 
-    def start(self, session: str = "take") -> None:
+    def start_sync(self, session: str = "take") -> str:
+        """Block until jack_capture is confirmed running (~0.5 s).
+        Returns the output filename. Raises HTTPException on any failure.
+        Called from a sync FastAPI route (thread-pool) — safe to block."""
+        safe_session = _safe_filename(session) if session else "take"
+
         with self._lock:
             if self._state not in (State.IDLE, State.ERROR):
                 raise HTTPException(409, f"Cannot start: state is {self._state.value}")
@@ -484,36 +526,18 @@ class RecorderController:
             self._current_file = None
             self._current_path = None
             self._set_state(State.ARMING)
-            safe_session = _safe_filename(session) if session else "take"
 
-        threading.Thread(
-            target=self._arm_sequence,
-            args=(safe_session,),
-            daemon=True,
-        ).start()
-
-    def _arm_sequence(self, session: str) -> None:
         try:
             err = self._pre_flight()
             if err:
                 with self._lock:
                     self._set_state(State.ERROR, f"Pre-flight: {err}")
-                play_tone_bg("error")
-                return
+                raise HTTPException(422, f"Pre-flight check failed: {err}")
 
-            # Countdown beeps
-            try:
-                beeps = int(cfg("COUNTDOWN_BEEPS", "3"))
-            except ValueError:
-                beeps = 3
-            if beeps > 0:
-                self._play_countdown(beeps)
-
-            # Build output path
             ts = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             rec_dir = _get_recordings_dir()
             os.makedirs(rec_dir, exist_ok=True)
-            out_filename = f"{ts}_{session}.wav"
+            out_filename = f"{ts}_{safe_session}.wav"
             out_path = os.path.join(rec_dir, out_filename)
 
             if MOCK_MODE:
@@ -522,26 +546,29 @@ class RecorderController:
             else:
                 cmd = self._build_capture_cmd(out_path)
                 log.info("jack_capture: %s", " ".join(shlex.quote(c) for c in cmd))
-                # Hold stdin open with a pipe: jack_capture stops on Return/EOF,
-                # and under systemd stdin would be /dev/null (instant EOF). An
-                # open pipe we never write to keeps it recording until SIGINT.
+                # Hold stdin open so jack_capture doesn't get EOF under systemd
                 proc = subprocess.Popen(
                     cmd,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                 )
-                # Brief wait to detect immediate failure
                 time.sleep(0.5)
                 if proc.poll() is not None:
-                    stderr = b""
+                    stderr_bytes = b""
                     try:
-                        stderr = proc.stderr.read() if proc.stderr else b""
+                        stderr_bytes = proc.stderr.read() if proc.stderr else b""
                     except Exception:
                         pass
-                    raise RuntimeError(
-                        f"jack_capture failed to start (exit={proc.returncode}): "
-                        f"{stderr.decode(errors='replace')[:200]}"
+                    err_detail = stderr_bytes.decode(errors="replace")[:200]
+                    with self._lock:
+                        self._set_state(
+                            State.ERROR,
+                            f"jack_capture failed to start (exit={proc.returncode}): {err_detail}",
+                        )
+                    raise HTTPException(
+                        500,
+                        f"jack_capture failed to start (exit={proc.returncode}): {err_detail}",
                     )
                 threading.Thread(
                     target=self._monitor_proc,
@@ -559,14 +586,20 @@ class RecorderController:
                 self._recording_start_time = time.time()
                 self._set_state(State.RECORDING)
 
-            play_tone_sync("go")
+            # Fallback go-tone on OUT_DEVICE for headless/non-browser operation
+            play_tone_bg("go")
 
+            return out_filename
+
+        except HTTPException:
+            raise
         except Exception as exc:
-            log.exception("Arm sequence failed: %s", exc)
+            log.exception("Start failed: %s", exc)
             with self._lock:
                 self._set_state(State.ERROR, str(exc))
                 self._proc = None
             play_tone_bg("error")
+            raise HTTPException(500, f"Recording start failed: {exc}")
 
     def stop(self) -> None:
         with self._lock:
@@ -721,10 +754,6 @@ class RecorderController:
             error = self._error_msg
 
         conf = get_cfg()
-        jack_ports_str = conf.get("JACK_PORTS", "system:capture_1")
-        required_ports = jack_ports_str.split()
-        mic_ports_str = conf.get("MIC_PORTS", "")
-        mic_ports = mic_ports_str.split() if mic_ports_str else []
         all_lsp = cached_jack_lsp()
         active_ports = set(all_lsp)
         is_jack_alive = bool(active_ports) or MOCK_MODE
@@ -732,32 +761,31 @@ class RecorderController:
         recording_ports = get_active_ports()
         recording_ports_set = set(recording_ports)
 
-        # All JACK capture ports visible right now
+        # All JACK capture ports visible right now, naturally sorted
         available_capture = sorted(
-            p for p in active_ports if "capture" in p.lower()
+            (p for p in active_ports if "capture" in p.lower()),
+            key=_natural_key,
         )
         if MOCK_MODE and not available_capture:
             available_capture = recording_ports
 
-        if not mic_ports and required_ports:
-            mic_ports = [f"mock-{i+1}" for i in range(len(required_ports))]
-
-        # Build usb_port lookup from config order
+        # Map each live capture port to its stable USB port token for display
+        usb_lookup = {} if MOCK_MODE else _usb_ports_by_cardid()
         usb_by_jack: dict[str, str] = {}
-        for i, up in enumerate(mic_ports):
-            jp = required_ports[i] if i < len(required_ports) else ""
-            if jp:
-                usb_by_jack[jp] = up
+        for jp in available_capture:
+            client = jp.split(":", 1)[0]
+            if client in usb_lookup:
+                usb_by_jack[jp] = usb_lookup[client]
 
+        # Mic list derived from live ports (no dependency on config MIC_PORTS)
         mics: list[dict[str, Any]] = []
-        for i, usb_port in enumerate(mic_ports, 1):
-            jack_port = required_ports[i - 1] if i - 1 < len(required_ports) else ""
+        for i, jack_port in enumerate(available_capture, 1):
             ch = (recording_ports.index(jack_port) + 1) if jack_port in recording_ports_set else None
             mics.append({
                 "index": i,
-                "usb_port": usb_port,
+                "usb_port": usb_by_jack.get(jack_port, ""),
                 "jack_port": jack_port,
-                "present": jack_port in active_ports if not MOCK_MODE else True,
+                "present": True,
                 "recording": jack_port in recording_ports_set,
                 "channel": ch,
             })
@@ -898,10 +926,12 @@ class StartReq(BaseModel):
 
 
 @app.post("/api/start")
-async def api_start(req: StartReq) -> dict[str, Any]:
+def api_start(req: StartReq) -> dict[str, Any]:
+    """Synchronous route (runs in thread pool). Blocks ~0.5 s until
+    jack_capture is confirmed running. Returns state=RECORDING on success."""
     session = (req.session or "take").strip() or "take"
-    controller.start(session)
-    return {"status": "arming", "session": session}
+    filename = controller.start_sync(session)
+    return {"state": "RECORDING", "file": filename, "session": session}
 
 
 @app.post("/api/stop")
@@ -948,11 +978,11 @@ async def api_mics_select(req: MicSelectReq) -> dict[str, Any]:
 
 @app.delete("/api/mics/select")
 async def api_mics_reset() -> dict[str, Any]:
-    """Reset to config default (JACK_PORTS)."""
+    """Reset to the auto-detected mic default (all live Mic* capture ports)."""
     with _mic_selection_lock:
         _mic_selection["ports"] = []
-    default = cfg("JACK_PORTS", "").split()
-    log.info("Mic selection reset to config default: %s", default)
+    default = default_mic_ports()
+    log.info("Mic selection reset to auto default: %s", default)
     return {"selected": default, "channels": len(default)}
 
 

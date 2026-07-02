@@ -431,6 +431,18 @@
 
   /* ── Footer ──────────────────────────────────────────────────────────────── */
   #footer { font-size: 0.68rem; color: #444; text-align: center; margin-top: 16px; }
+
+  /* ── Sync flash overlay ──────────────────────────────────────────────────── */
+  #sync-flash {
+    position: fixed;
+    inset: 0;
+    background: #fff;
+    pointer-events: none;
+    opacity: 0;
+    z-index: 9999;
+    transition: opacity 80ms ease-out;
+  }
+  #sync-flash.flash-on { opacity: 1; transition: none; }
 </style>
 </head>
 <body>
@@ -517,6 +529,8 @@
 
 <div id="footer">pi time: —</div>
 
+<div id="sync-flash" aria-hidden="true"></div>
+
 <script>
 (function () {
   "use strict";
@@ -527,6 +541,103 @@
   let connErrCount = 0;
   let countdownBeeps = 3;
   let minFreeMb    = 500;
+  // Prevents poll-triggered updateUI from double-firing the sync tone when
+  // doStart already fired it on the fetch response.
+  let _syncToneFired = false;
+
+  // ── Web Audio (tones & sync) ───────────────────────────────────────────────
+  let _audioCtx = null;
+
+  function getAudioCtx() {
+    if (!_audioCtx || _audioCtx.state === "closed") {
+      _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    return _audioCtx;
+  }
+
+  // Call from a user-gesture handler to unlock iOS/Android AudioContext.
+  function prewarmAudio() {
+    try {
+      const ctx = getAudioCtx();
+      if (ctx.state === "suspended") ctx.resume();
+      const buf = ctx.createBuffer(1, 1, ctx.sampleRate);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.start(0);
+    } catch (e) {}
+  }
+
+  // Play a sine tone at freq/Hz for dur/s starting at audioCtx time t0.
+  // Returns the end time (t0 + dur).
+  function _playTone(freq, dur, t0, gain) {
+    const ctx = getAudioCtx();
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(gain, t0);
+    g.gain.linearRampToValueAtTime(0, t0 + dur);
+    g.connect(ctx.destination);
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freq, t0);
+    osc.connect(g);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.005);
+    return t0 + dur;
+  }
+
+  // Play named browser-side state-transition tone.
+  function playStateTone(name) {
+    try {
+      const ctx = getAudioCtx();
+      if (ctx.state === "suspended") ctx.resume();
+      const t = ctx.currentTime + 0.005;
+      if (name === "saved") {
+        const t2 = _playTone(880,  0.15, t,    0.55);
+        _playTone(1100, 0.15, t2 + 0.04, 0.55);
+      } else if (name === "error") {
+        const t2 = _playTone(300, 0.15, t,    0.55);
+        _playTone(200, 0.15, t2 + 0.04, 0.55);
+      }
+    } catch (e) {}
+  }
+
+  // Sync tone: 8 ms white-noise burst (sharp onset) + 72 ms 1 kHz sine.
+  // The noise-burst onset is the sync reference; flash fires at the same time.
+  function playSyncTone() {
+    try {
+      const ctx = getAudioCtx();
+      if (ctx.state === "suspended") ctx.resume();
+      const t0 = ctx.currentTime + 0.005;
+      const sr = ctx.sampleRate;
+
+      // White-noise burst — 8 ms, hard onset, rapid decay
+      const nBuf = ctx.createBuffer(1, Math.ceil(sr * 0.008), sr);
+      const nd   = nBuf.getChannelData(0);
+      for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+      const nSrc = ctx.createBufferSource();
+      const nGain = ctx.createGain();
+      nSrc.buffer = nBuf;
+      nGain.gain.setValueAtTime(1.0, t0);
+      nGain.gain.linearRampToValueAtTime(0, t0 + 0.008);
+      nSrc.connect(nGain);
+      nGain.connect(ctx.destination);
+      nSrc.start(t0);
+
+      // 1000 Hz sine tail — 72 ms with fade-out
+      _playTone(1000, 0.072, t0 + 0.008, 0.75);
+
+      // Flash fires at t0 — convert to wall-clock delay
+      const msDelay = Math.max(0, (t0 - ctx.currentTime) * 1000);
+      setTimeout(triggerFlash, msDelay);
+    } catch (e) {}
+  }
+
+  // White full-screen flash (hold 1 frame, then fade out via CSS transition).
+  function triggerFlash() {
+    const el = document.getElementById("sync-flash");
+    el.classList.add("flash-on");
+    requestAnimationFrame(() => requestAnimationFrame(() => el.classList.remove("flash-on")));
+  }
 
   // Protocol
   let protoTotal   = 0;
@@ -577,6 +688,21 @@
     lastState = d.state || "IDLE";
     countdownBeeps = d.countdown_beeps || 3;
 
+    // Browser-side state-transition tones
+    if (prevState !== lastState) {
+      if (prevState !== "RECORDING" && lastState === "RECORDING") {
+        // Entering RECORDING: play sync tone unless doStart already did
+        if (!_syncToneFired) playSyncTone();
+        _syncToneFired = false;
+      }
+      if (prevState === "STOPPING" && lastState === "IDLE") {
+        playStateTone("saved");
+      }
+      if (prevState !== "ERROR" && lastState === "ERROR") {
+        playStateTone("error");
+      }
+    }
+
     updateButton(d);
     updateTimer(d);
     updateDisk(d);
@@ -608,14 +734,10 @@
         btn.disabled = false;
         btn.innerHTML = "START";
         break;
-      case "ARMING": {
+      case "ARMING":
         btn.disabled = true;
-        const bl = Math.max(0, countdownBeeps - Math.floor(d.elapsed_seconds));
-        btn.innerHTML = bl > 0
-          ? `<span class="spinner"></span><span>${bl}</span>`
-          : `<span class="spinner"></span><span>Starting&hellip;</span>`;
+        btn.innerHTML = `<span class="spinner"></span><span>Starting&hellip;</span>`;
         break;
-      }
       case "RECORDING":
         btn.disabled = false;
         btn.innerHTML = `<span class="pulse-dot"></span><span>STOP</span>`;
@@ -643,8 +765,7 @@
       el.textContent = String(Math.floor(s / 60)).padStart(2,"0") + ":" + String(s % 60).padStart(2,"0");
       el.className = "active-rec";
     } else if (d.state === "ARMING") {
-      const bl = Math.max(0, countdownBeeps - Math.floor(elapsed));
-      el.textContent = bl > 0 ? String(bl) : "…";
+      el.textContent = "…";
       el.className = "active-arm";
     } else {
       el.textContent = "—";
@@ -901,16 +1022,36 @@
   };
 
   function doStart() {
+    // Prewarm AudioContext in user-gesture context (required on iOS/Android)
+    prewarmAudio();
+
     let session = document.getElementById("session-input").value.trim();
     if (!session && protoEntry) session = protoEntry.suffix;
     if (!session) session = "take";
+
+    // Show arming state immediately without waiting for server response
+    lastState = "ARMING";
+    updateButton({ state: "ARMING", elapsed_seconds: 0 });
+    updateTimer({ state: "ARMING", elapsed_seconds: 0 });
+
     fetch("/api/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session }),
     })
     .then(r => r.json().then(b => ({ ok: r.ok, b })))
-    .then(({ ok, b }) => { if (!ok) showError(b.detail || "Start failed"); })
+    .then(({ ok, b }) => {
+      if (!ok) {
+        showError(b.detail || "Start failed");
+      } else if (b.state === "RECORDING") {
+        // Recording is live — fire sync tone + flash immediately
+        playSyncTone();
+        _syncToneFired = true; // tell poll-triggered updateUI not to double-fire
+        lastState = "RECORDING";
+        updateButton({ state: "RECORDING" });
+        updateTimer({ state: "RECORDING", elapsed_seconds: 0 });
+      }
+    })
     .catch(e => showError("Network: " + e));
   }
 

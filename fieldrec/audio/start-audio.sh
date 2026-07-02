@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # audio/start-audio.sh — Start JACK (dummy) + zita-a2j bridges for all mics
 #
-# Architecture: jackd runs on the dummy driver (no capture device). Every mic
-# is bridged via zita-a2j so all channels go through the same adaptive-
-# resampling path and arrive with equal latency — zero inter-channel offset.
+# Architecture: jackd runs on the dummy driver (no capture device). Every
+# USB audio capture device is auto-detected and bridged via zita-a2j so all
+# channels go through the same adaptive-resampling path and arrive with equal
+# latency — zero inter-channel offset.
+#
+# Each JACK client is named after its ALSA card id (e.g. "Mic", "Mic_1"),
+# which is stable regardless of which physical USB port the mic is in. No
+# MIC_PORTS configuration is needed — the web UI lists every detected input
+# and pre-selects the ones named like mics.
 #
 # Reads /etc/fieldrec/fieldrec.conf
 # Runs as: TARGET_USER (via audio-sync.service)
@@ -25,21 +31,24 @@ source "$CONF"
 SAMPLE_RATE="${SAMPLE_RATE:-16000}"
 JACK_FRAMES="${JACK_FRAMES:-512}"
 JACK_NPERIODS="${JACK_NPERIODS:-3}"
-MIC_PORTS="${MIC_PORTS:-}"
 
-# ── USB port → ALSA card resolver ────────────────────────────────────────────
-resolve_card() {
-    local want="$1" c iface
+# ── Sanitize a string into a valid JACK client name ──────────────────────────
+sanitize_name() { printf '%s' "$1" | tr -c 'A-Za-z0-9_' '_'; }
+
+# ── Discover all USB audio capture devices ───────────────────────────────────
+# Emits one "cardnum<TAB>cardid" line per capture-capable card, sorted by id
+# so channel order is stable (Mic, Mic_1, Mic_2, …).
+discover_capture_cards() {
+    local c cardnum cardid
     for c in /sys/class/sound/card[0-9]*; do
         [[ -d "$c" ]] || continue
-        iface=$(basename "$(readlink -f "$c/device" 2>/dev/null)")
-        [ "${iface%%:*}" = "$want" ] && { basename "$c" | tr -dc '0-9'; return 0; }
-    done
-    return 1
+        cardnum=$(basename "$c" | tr -dc '0-9')
+        # A capture PCM shows up as /sys/class/sound/pcmC<num>D*c
+        compgen -G "/sys/class/sound/pcmC${cardnum}D*c" >/dev/null 2>&1 || continue
+        cardid=$(cat "$c/id" 2>/dev/null || echo "card${cardnum}")
+        printf '%s\t%s\n' "$cardnum" "$cardid"
+    done | sort -t $'\t' -k2,2 -V
 }
-
-[[ -n "$MIC_PORTS" ]] || die "MIC_PORTS not set in $CONF"
-read -ra MIC_PORT_ARRAY <<< "$MIC_PORTS"
 
 # ── Kill any existing JACK / bridges ─────────────────────────────────────────
 log "Stopping any existing JACK server and zita bridges ..."
@@ -72,17 +81,20 @@ for (( i=0; i<15; i++ )); do
     fi
 done
 
-# ── Bridge ALL mics via zita-a2j (mic1 … micN) ───────────────────────────────
-mic_index=1
-for port in "${MIC_PORT_ARRAY[@]}"; do
-    bridge_name="mic${mic_index}"
-    card_num="$(resolve_card "$port")" || {
-        warn "Cannot resolve card for port=$port (${bridge_name}) — skipping"
-        (( mic_index++ ))
-        continue
-    }
+# ── Auto-detect and bridge every capture device via zita-a2j ─────────────────
+mapfile -t CAPTURE_CARDS < <(discover_capture_cards)
+if [[ "${#CAPTURE_CARDS[@]}" -eq 0 ]]; then
+    warn "No USB audio capture devices detected — JACK is up with no inputs."
+    warn "Plug in mics and 'sudo systemctl restart audio-sync'."
+fi
 
-    log "Starting zita-a2j bridge '${bridge_name}' for port=${port} card=${card_num} ..."
+bridged=0
+for entry in "${CAPTURE_CARDS[@]}"; do
+    card_num="${entry%%$'\t'*}"
+    card_id="${entry#*$'\t'}"
+    bridge_name="$(sanitize_name "$card_id")"
+
+    log "Starting zita-a2j bridge '${bridge_name}' for card=${card_num} (id=${card_id}) ..."
     zita-a2j \
         -j "$bridge_name" \
         -d "hw:${card_num}" \
@@ -103,13 +115,14 @@ for port in "${MIC_PORT_ARRAY[@]}"; do
         fi
     done
     if [[ "$found" -eq 0 ]]; then
-        die "JACK port '${local_port}' did not appear after 10s — zita-a2j failed for ${bridge_name}"
+        # One bad device shouldn't kill the whole stack — warn and continue.
+        warn "  JACK port '${local_port}' did not appear after 10s — skipping card ${card_num}"
+        continue
     fi
-
-    (( mic_index++ ))
+    (( bridged++ ))
 done
 
-ok "Audio stack ready — ${#MIC_PORT_ARRAY[@]} mic(s) via zita-a2j:"
+ok "Audio stack ready — ${bridged} input(s) bridged via zita-a2j:"
 ok "  Sample rate: ${SAMPLE_RATE} Hz | Frames: ${JACK_FRAMES} x ${JACK_NPERIODS}"
 jack_lsp 2>/dev/null | grep 'capture' | while read -r line; do ok "  ${line}"; done
 
