@@ -91,47 +91,31 @@ for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
 done
 log_info "CPU governor: ${cur:-unknown}"
 
-# ── Step 5: Mic enrollment ────────────────────────────────────────────────────
-log_section "Step 5: Microphone enrollment"
+# ── Step 5: Microphone detection ──────────────────────────────────────────────
+log_section "Step 5: Microphone detection"
 list_usb_audio_devices
-
-CHANNELS=4
-
+# Mics are auto-detected at runtime by start-audio.sh — every USB audio capture
+# device is bridged into JACK and named after its ALSA card id (Mic, Mic_1, …).
+# No enrollment or MIC_PORTS config is needed; re-plugging into a different USB
+# port no longer requires editing the config.
 if [[ "$ENROLL" -eq 1 ]]; then
-    log_info "Running interactive mic enrollment ..."
-    MIC_PORTS_STR="$(enroll_mics_interactive "$CHANNELS")"
-else
-    log_info "Auto-detecting mics (use --enroll for interactive) ..."
-    MIC_PORTS_STR="$(enroll_mics_auto "$CHANNELS")"
+    log_info "Mic enrollment is no longer required — inputs are auto-detected at runtime."
 fi
-
-read -ra MIC_PORT_ARRAY <<< "$MIC_PORTS_STR"
-if [[ ${#MIC_PORT_ARRAY[@]} -eq 0 ]]; then
-    log_warn "No mics detected; using placeholder ports"
-    MIC_PORT_ARRAY=(1-1.1 1-1.2 1-1.3 1-1.4)
-fi
-CHANNELS="${#MIC_PORT_ARRAY[@]}"
-JACK_MASTER_PORT="${MIC_PORT_ARRAY[0]}"
-
-log_ok "Enrolled ${#MIC_PORT_ARRAY[@]} mic(s): ${MIC_PORT_ARRAY[*]}"
-
-# Build JACK_PORTS string: all mics go through zita-a2j (mic1 .. micN)
-JACK_PORTS=""
-for (( i=0; i<${#MIC_PORT_ARRAY[@]}; i++ )); do
-    JACK_PORTS+=" mic$(( i+1 )):capture_1"
+# Count capture-capable cards for the log only.
+DETECTED_MICS=0
+for c in /sys/class/sound/card[0-9]*; do
+    [[ -d "$c" ]] || continue
+    cn=$(basename "$c" | tr -dc '0-9')
+    compgen -G "/sys/class/sound/pcmC${cn}D*c" >/dev/null 2>&1 && (( DETECTED_MICS++ )) || true
 done
-JACK_PORTS="${JACK_PORTS# }"  # trim leading space
-log_info "JACK_PORTS: $JACK_PORTS"
+log_ok "Detected ${DETECTED_MICS} USB audio capture device(s) — all will be bridged at boot."
 
-# ── Step 6: Sample rate detection ─────────────────────────────────────────────
-log_section "Step 6: Sample rate detection"
-SAMPLE_RATE="48000"
-
-if resolve_card "$JACK_MASTER_PORT" &>/dev/null; then
-    SAMPLE_RATE="$(detect_sample_rate_for_port "$JACK_MASTER_PORT")"
-else
-    log_warn "MIC1 port $JACK_MASTER_PORT not connected — using default $SAMPLE_RATE Hz"
-fi
+# ── Step 6: Sample rate ───────────────────────────────────────────────────────
+log_section "Step 6: Sample rate"
+# XIAO nRF52840 Sense mics support 16000 Hz only. jackd + all zita-a2j bridges
+# run at this rate; bridges adaptively resample if a device differs.
+SAMPLE_RATE="16000"
+log_info "Sample rate: ${SAMPLE_RATE} Hz (XIAO nRF52840 Sense)"
 
 # ── Step 7: Storage setup ─────────────────────────────────────────────────────
 log_section "Step 7: Storage"
@@ -178,16 +162,17 @@ TARGET_USER=${TARGET_USER}
 TARGET_HOME=${TARGET_HOME}
 RECORDINGS_DIR=${RECORDINGS_DIR}
 TONES_DIR=${TONES_DIR}
-JACK_MASTER_PORT=${JACK_MASTER_PORT}
-MIC_PORTS="${MIC_PORT_ARRAY[*]}"
-JACK_PORTS="${JACK_PORTS}"
-CHANNELS=${CHANNELS}
+# Mics are auto-detected at runtime (named Mic, Mic_1, … after their ALSA card
+# id). MIC_PORTS/JACK_PORTS are IGNORED at runtime — kept for reference only.
+MIC_PORTS=""
+JACK_PORTS=""
+CHANNELS=4
 SAMPLE_RATE=${SAMPLE_RATE}
 JACK_FRAMES=512
 JACK_NPERIODS=3
 OUT_DEVICE=${OUT_DEVICE}
 BIT_DEPTH=16
-COUNTDOWN_BEEPS=3
+COUNTDOWN_BEEPS=0
 MIN_FREE_MB=500
 HTTP_HOST=0.0.0.0
 HTTP_PORT=8080
@@ -293,4 +278,4 @@ log_info "  Install log:  $LOGFILE"
 log_info "  Audio:        journalctl -u audio-sync -f"
 log_info "  Web:          journalctl -u fieldrec-web -f"
 echo ""
-log_info "To re-enroll microphones: sudo $0 --enroll"
+log_info "Mics are auto-detected at boot — no enrollment needed. Just plug them in."

@@ -78,11 +78,11 @@ def load_config(path: str = CONF_PATH) -> dict[str, str]:
 
 _MOCK_DEFAULTS: dict[str, str] = {
     "CHANNELS": "4",
-    "JACK_PORTS": "mic1:capture_1 mic2:capture_1 mic3:capture_1 mic4:capture_1",
-    "MIC_PORTS": "1-1.1 1-1.2 1-1.3 1-1.4",
-    "SAMPLE_RATE": "48000",
+    "JACK_PORTS": "Mic:capture_1 Mic_1:capture_1 Mic_2:capture_1 Mic_3:capture_1",
+    "MIC_PORTS": "3-1.1 3-1.2 3-1.3 3-1.4",
+    "SAMPLE_RATE": "16000",
     "BIT_DEPTH": "16",
-    "COUNTDOWN_BEEPS": "3",
+    "COUNTDOWN_BEEPS": "0",
     "MIN_FREE_MB": "500",
     "OUT_DEVICE": "plughw:CARD=Device",
 }
@@ -293,18 +293,61 @@ def get_disk_stats(path: str) -> tuple[float, float]:
 
 
 # ── Mic selection ─────────────────────────────────────────────────────────────
-# Empty list means "use JACK_PORTS from config". Set via /api/mics/select.
+# Empty list means "use the auto-detected mic default". Set via /api/mics/select.
 _mic_selection: dict[str, Any] = {"ports": []}
 _mic_selection_lock = threading.Lock()
 
+# JACK client names for XIAO mics look like "Mic", "Mic_1", "Mic_2", …
+_MIC_NAME_RE = re.compile(r"^Mic(_\d+)?$", re.IGNORECASE)
+
+
+def _natural_key(port: str) -> tuple[Any, ...]:
+    """Sort key so Mic < Mic_1 < Mic_2 < … < Mic_10 (numeric-aware)."""
+    return tuple(
+        int(tok) if tok.isdigit() else tok
+        for tok in re.split(r"(\d+)", port)
+    )
+
+
+def default_mic_ports() -> list[str]:
+    """Live capture ports whose JACK client is named like a mic (Mic, Mic_1, …),
+    naturally sorted. This is the default recording selection when the user
+    hasn't picked channels explicitly."""
+    mics = [
+        p for p in cached_jack_lsp()
+        if "capture" in p.lower() and _MIC_NAME_RE.match(p.split(":", 1)[0])
+    ]
+    return sorted(mics, key=_natural_key)
+
 
 def get_active_ports() -> list[str]:
-    """Return the active recording port list, falling back to config JACK_PORTS."""
+    """Return the active recording port list. Falls back to the auto-detected
+    mic default (all live Mic* capture ports) when nothing is selected."""
     with _mic_selection_lock:
         sel = _mic_selection["ports"]
         if sel:
             return list(sel)
-    return cfg("JACK_PORTS", "").split()
+    return default_mic_ports()
+
+
+def _usb_ports_by_cardid() -> dict[str, str]:
+    """Map each ALSA card id (sanitized like the JACK client name) to its
+    stable USB port token (e.g. "3-1.1"), for display in the web UI."""
+    result: dict[str, str] = {}
+    try:
+        for entry in sorted(Path("/sys/class/sound").glob("card[0-9]*")):
+            try:
+                card_id = (entry / "id").read_text().strip()
+                dev = os.path.realpath(str(entry / "device"))
+                port = os.path.basename(dev).split(":", 1)[0]
+            except Exception:
+                continue
+            if card_id and port:
+                safe = re.sub(r"[^A-Za-z0-9_]", "_", card_id)
+                result[safe] = port
+    except Exception:
+        pass
+    return result
 
 
 # ── Study protocol ────────────────────────────────────────────────────────────
@@ -711,10 +754,6 @@ class RecorderController:
             error = self._error_msg
 
         conf = get_cfg()
-        jack_ports_str = conf.get("JACK_PORTS", "system:capture_1")
-        required_ports = jack_ports_str.split()
-        mic_ports_str = conf.get("MIC_PORTS", "")
-        mic_ports = mic_ports_str.split() if mic_ports_str else []
         all_lsp = cached_jack_lsp()
         active_ports = set(all_lsp)
         is_jack_alive = bool(active_ports) or MOCK_MODE
@@ -722,32 +761,31 @@ class RecorderController:
         recording_ports = get_active_ports()
         recording_ports_set = set(recording_ports)
 
-        # All JACK capture ports visible right now
+        # All JACK capture ports visible right now, naturally sorted
         available_capture = sorted(
-            p for p in active_ports if "capture" in p.lower()
+            (p for p in active_ports if "capture" in p.lower()),
+            key=_natural_key,
         )
         if MOCK_MODE and not available_capture:
             available_capture = recording_ports
 
-        if not mic_ports and required_ports:
-            mic_ports = [f"mock-{i+1}" for i in range(len(required_ports))]
-
-        # Build usb_port lookup from config order
+        # Map each live capture port to its stable USB port token for display
+        usb_lookup = {} if MOCK_MODE else _usb_ports_by_cardid()
         usb_by_jack: dict[str, str] = {}
-        for i, up in enumerate(mic_ports):
-            jp = required_ports[i] if i < len(required_ports) else ""
-            if jp:
-                usb_by_jack[jp] = up
+        for jp in available_capture:
+            client = jp.split(":", 1)[0]
+            if client in usb_lookup:
+                usb_by_jack[jp] = usb_lookup[client]
 
+        # Mic list derived from live ports (no dependency on config MIC_PORTS)
         mics: list[dict[str, Any]] = []
-        for i, usb_port in enumerate(mic_ports, 1):
-            jack_port = required_ports[i - 1] if i - 1 < len(required_ports) else ""
+        for i, jack_port in enumerate(available_capture, 1):
             ch = (recording_ports.index(jack_port) + 1) if jack_port in recording_ports_set else None
             mics.append({
                 "index": i,
-                "usb_port": usb_port,
+                "usb_port": usb_by_jack.get(jack_port, ""),
                 "jack_port": jack_port,
-                "present": jack_port in active_ports if not MOCK_MODE else True,
+                "present": True,
                 "recording": jack_port in recording_ports_set,
                 "channel": ch,
             })
@@ -940,11 +978,11 @@ async def api_mics_select(req: MicSelectReq) -> dict[str, Any]:
 
 @app.delete("/api/mics/select")
 async def api_mics_reset() -> dict[str, Any]:
-    """Reset to config default (JACK_PORTS)."""
+    """Reset to the auto-detected mic default (all live Mic* capture ports)."""
     with _mic_selection_lock:
         _mic_selection["ports"] = []
-    default = cfg("JACK_PORTS", "").split()
-    log.info("Mic selection reset to config default: %s", default)
+    default = default_mic_ports()
+    log.info("Mic selection reset to auto default: %s", default)
     return {"selected": default, "channels": len(default)}
 
 

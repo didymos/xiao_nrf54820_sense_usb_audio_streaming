@@ -9,19 +9,19 @@ RECORDINGS_DIR=/mnt/ssd/recordings
 TONES_DIR=/opt/fieldrec/tones
 
 # ── Audio hardware ────────────────────────────────────────────────────────────
-# Space-separated USB port tokens for all mics in channel order.
-# Find via: ls -la /sys/class/sound/card*/device (look at symlink target prefix)
-MIC_PORTS="1-1.1 1-1.2 1-1.3 1-1.4"
-
-# JACK ports that jack_capture will record from (must match MIC_PORTS count).
-# All mics go through zita-a2j (mic1..micN) for equal inter-channel latency.
-JACK_PORTS="mic1:capture_1 mic2:capture_1 mic3:capture_1 mic4:capture_1"
-
-# Number of channels to record (1–N matching MIC_PORTS/JACK_PORTS count).
+# Mics are auto-detected: every USB audio capture device is bridged into JACK
+# and named after its ALSA card id (Mic, Mic_1, Mic_2, …). No MIC_PORTS or
+# JACK_PORTS configuration is needed — the web UI lists all detected inputs and
+# pre-selects the ones named like mics. Re-plugging into a different USB port
+# no longer requires editing this file.
+#
+# MIC_PORTS / JACK_PORTS below are IGNORED at runtime (kept for reference only).
+MIC_PORTS=""
+JACK_PORTS=""
 CHANNELS=4
 
-# Sample rate in Hz (auto-detected during install; override if needed).
-SAMPLE_RATE=48000
+# Sample rate in Hz. XIAO nRF52840 Sense mics support 16000 only.
+SAMPLE_RATE=16000
 
 # JACK buffer settings.
 JACK_FRAMES=512
