@@ -119,7 +119,10 @@ for entry in "${CAPTURE_CARDS[@]}"; do
         warn "  JACK port '${local_port}' did not appear after 10s — skipping card ${card_num}"
         continue
     fi
-    (( bridged++ ))
+    # NOTE: use $((...)) not (( bridged++ )) — the latter returns exit code 1
+    # when the pre-increment value is 0, which under `set -e` kills the script
+    # after the first successful bridge (systemd then restart-loops it).
+    bridged=$(( bridged + 1 ))
 done
 
 ok "Audio stack ready — ${bridged} input(s) bridged via zita-a2j:"

@@ -497,6 +497,7 @@
       Channels&nbsp;<span id="ch-count" style="color:var(--text);font-weight:400;font-size:0.85rem"></span>
     </div>
     <div style="display:flex;gap:6px">
+      <button class="btn-sm" id="mics-refresh-btn" onclick="refreshMics()" title="Rescan inputs">&#8635; Refresh</button>
       <button class="btn-sm" id="mics-all-btn" onclick="micToggleAll()" style="display:none">All</button>
       <button class="btn-sm btn-dl" id="mics-apply-btn" onclick="applyMicSelection()" disabled style="display:none">Apply</button>
     </div>
@@ -871,6 +872,19 @@
       .filter(c => c.checked)
       .map(c => c.id.replace("micchk-", ""));
   }
+
+  // Force a re-scan of inputs: discard pending local changes and re-render
+  // from a fresh server poll (audio-sync brings inputs in/out live).
+  window.refreshMics = function () {
+    const btn = document.getElementById("mics-refresh-btn");
+    micDirty = false;
+    document.getElementById("mics-apply-btn").disabled = true;
+    const prev = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = "&#8635; …";
+    poll();
+    setTimeout(() => { btn.disabled = false; btn.innerHTML = prev; }, 500);
+  };
 
   window.micToggleAll = function () {
     const checks = [...document.querySelectorAll(".mic-row-check")];
