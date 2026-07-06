@@ -301,38 +301,18 @@ _mic_selection_lock = threading.Lock()
 _MIC_NAME_RE = re.compile(r"^Mic(_\d+)?$", re.IGNORECASE)
 
 
-def _natural_key(port: str) -> tuple[Any, ...]:
-    """Sort key so Mic < Mic_1 < Mic_2 < … < Mic_10 (numeric-aware)."""
+def _natural_key(s: str) -> tuple[Any, ...]:
+    """Numeric-aware sort key: '3-1.2' < '3-1.10', 'Mic' < 'Mic_1'."""
     return tuple(
         int(tok) if tok.isdigit() else tok
-        for tok in re.split(r"(\d+)", port)
+        for tok in re.split(r"(\d+)", s)
     )
-
-
-def default_mic_ports() -> list[str]:
-    """Live capture ports whose JACK client is named like a mic (Mic, Mic_1, …),
-    naturally sorted. This is the default recording selection when the user
-    hasn't picked channels explicitly."""
-    mics = [
-        p for p in cached_jack_lsp()
-        if "capture" in p.lower() and _MIC_NAME_RE.match(p.split(":", 1)[0])
-    ]
-    return sorted(mics, key=_natural_key)
-
-
-def get_active_ports() -> list[str]:
-    """Return the active recording port list. Falls back to the auto-detected
-    mic default (all live Mic* capture ports) when nothing is selected."""
-    with _mic_selection_lock:
-        sel = _mic_selection["ports"]
-        if sel:
-            return list(sel)
-    return default_mic_ports()
 
 
 def _usb_ports_by_cardid() -> dict[str, str]:
     """Map each ALSA card id (sanitized like the JACK client name) to its
-    stable USB port token (e.g. "3-1.1"), for display in the web UI."""
+    stable USB port token (e.g. "3-1.1"). The port token's leaf (.1/.2/…) is
+    the physical hub socket — stable across reboots and re-enumeration."""
     result: dict[str, str] = {}
     try:
         for entry in sorted(Path("/sys/class/sound").glob("card[0-9]*")):
@@ -348,6 +328,45 @@ def _usb_ports_by_cardid() -> dict[str, str]:
     except Exception:
         pass
     return result
+
+
+def _port_sort_key(port: str, usb: dict[str, str]) -> tuple[Any, ...]:
+    """Order capture ports by their physical USB port token (hub socket), so
+    channel N is always the same physical socket regardless of which card id
+    the kernel happened to assign this boot. Ports with no USB mapping sort
+    last, by name."""
+    client = port.split(":", 1)[0]
+    token = usb.get(client)
+    if token:
+        return (0,) + _natural_key(token)
+    return (1,) + _natural_key(port)
+
+
+def sort_ports_by_usb(ports: list[str]) -> list[str]:
+    """Sort JACK capture ports into stable channel order by USB hub socket."""
+    usb = {} if MOCK_MODE else _usb_ports_by_cardid()
+    return sorted(ports, key=lambda p: _port_sort_key(p, usb))
+
+
+def default_mic_ports() -> list[str]:
+    """Live capture ports whose JACK client is named like a mic (Mic, Mic_1, …),
+    ordered by physical USB hub socket. This is the default recording selection
+    when the user hasn't picked channels explicitly."""
+    mics = [
+        p for p in cached_jack_lsp()
+        if "capture" in p.lower() and _MIC_NAME_RE.match(p.split(":", 1)[0])
+    ]
+    return sort_ports_by_usb(mics)
+
+
+def get_active_ports() -> list[str]:
+    """Return the active recording port list. Falls back to the auto-detected
+    mic default (all live Mic* capture ports, ordered by hub socket)."""
+    with _mic_selection_lock:
+        sel = _mic_selection["ports"]
+        if sel:
+            return list(sel)
+    return default_mic_ports()
 
 
 # ── Study protocol ────────────────────────────────────────────────────────────
@@ -659,6 +678,12 @@ class RecorderController:
                 # Capture current protocol entry before advancing
                 proto = _get_protocol_snapshot()
                 recorded_ports = get_active_ports()
+                # Document the physical hub socket behind each channel so the
+                # recording is self-describing (channel N ← USB port token).
+                usb_lookup = {} if MOCK_MODE else _usb_ports_by_cardid()
+                usb_ports = [
+                    usb_lookup.get(p.split(":", 1)[0], "") for p in recorded_ports
+                ]
                 sidecar: dict[str, Any] = {
                     "file": out_path.name,
                     "start_time_utc": (
@@ -673,6 +698,7 @@ class RecorderController:
                     "sample_rate": cfg("SAMPLE_RATE", "48000"),
                     "channels": len(recorded_ports),
                     "jack_ports": recorded_ports,
+                    "usb_ports": usb_ports,
                     "bit_depth": cfg("BIT_DEPTH", "16"),
                     "downloaded": False,
                 }
@@ -761,16 +787,17 @@ class RecorderController:
         recording_ports = get_active_ports()
         recording_ports_set = set(recording_ports)
 
-        # All JACK capture ports visible right now, naturally sorted
-        available_capture = sorted(
-            (p for p in active_ports if "capture" in p.lower()),
-            key=_natural_key,
+        # Map each live capture port to its stable USB port token for display
+        usb_lookup = {} if MOCK_MODE else _usb_ports_by_cardid()
+
+        # All JACK capture ports visible right now, ordered by hub socket so the
+        # UI rows and channel numbers follow the physical USB port order.
+        available_capture = sort_ports_by_usb(
+            [p for p in active_ports if "capture" in p.lower()]
         )
         if MOCK_MODE and not available_capture:
             available_capture = recording_ports
 
-        # Map each live capture port to its stable USB port token for display
-        usb_lookup = {} if MOCK_MODE else _usb_ports_by_cardid()
         usb_by_jack: dict[str, str] = {}
         for jp in available_capture:
             client = jp.split(":", 1)[0]

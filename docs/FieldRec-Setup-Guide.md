@@ -163,19 +163,36 @@ The app installs as a standalone PWA with a dark-themed icon.
 
 ---
 
-## 5. Microphone Identification
+## 5. Microphone Identification & Channel Assignment
 
-Mics are matched by their **ALSA card id** rather than by USB port path. The card id is read from `/sys/class/sound/cardN/id` and sanitised to `[A-Za-z0-9_]` to form the JACK client name. For XIAO nRF52840 Sense mics the ids are `Mic`, `Mic_1`, `Mic_2`, `Mic_3`, so the JACK ports become `Mic:capture_1`, `Mic_1:capture_1`, and so on.
+Every USB audio capture device is auto-detected at boot and bridged into JACK by a `zita-a2j` client named after its ALSA card id (`/sys/class/sound/cardN/id`, sanitised to `[A-Za-z0-9_]`). For XIAO nRF52840 Sense mics these ids are `Mic`, `Mic_1`, `Mic_2`, `Mic_3`. There is no enrollment step and no `MIC_PORTS`/`JACK_PORTS` config (both are ignored at runtime).
 
-This name is **stable regardless of which physical USB port a mic occupies** — re-plugging never requires editing config. There is no more USB-port identification or enrollment step; the `MIC_PORTS` and `JACK_PORTS` config keys are ignored at runtime (see [Configuration Reference](#9-configuration-reference)).
+### Channel = physical USB hub socket
 
-USB port tokens (e.g. `3-2.4`, the kernel's USB topology address) are no longer used for matching. They are still shown in the web UI as a secondary label under each mic row, looked up live from `/sys` for reference only.
+The XIAO firmware reports an **identical USB product string and serial** (`XIAO-MIC-001`) on every board, so the kernel cannot tell the units apart. It assigns the `Mic` / `Mic_1` / `Mic_2` / `Mic_3` suffixes in **enumeration order**, which can differ from one boot to the next — the *name* of a given physical mic is therefore not stable.
+
+To make recording channels deterministic, FieldRec orders channels by the **USB port token** (the kernel's topology address, e.g. `3-1.1`), not by the card-id name. The token's leaf (`.1`, `.2`, …) is the physical hub socket and is fixed by the hardware. So:
+
+```
+USB 3-1.1  → channel 1
+USB 3-1.2  → channel 2
+USB 3-1.3  → channel 3
+USB 3-1.4  → channel 4
+```
+
+Channel N is **always the same physical socket**, regardless of which card-id name the kernel happened to assign that boot. Label the four hub sockets `1`–`4` and the mapping never moves. The web UI leads each mic row with its `USB <token>` (the stable identifier) and shows the current card-id name as a small secondary label.
+
+> **Tip:** If you need a specific *microphone* (not socket) always on a given channel, keep each mic in its labelled hub socket, or flash the boards with unique USB serials so they can be matched by device identity instead.
 
 ### Listing detected capture devices
 
 ```bash
 jack_lsp                         # JACK client names (Mic, Mic_1, …)
 arecord -l                       # underlying ALSA capture cards
+# USB port token per capture card:
+for c in /sys/class/sound/card[0-9]*/device; do
+  echo "$(basename $(readlink -f $c) | cut -d: -f1)  $(cat $(dirname $c)/id)"
+done
 ```
 
 ---
@@ -241,7 +258,7 @@ The moment recording goes live, the **browser** plays a synchronisation tone (an
 
 ### Channels card
 
-Lists all auto-detected capture inputs, labelled by ALSA card id. Inputs whose JACK client name matches `^Mic(_\d+)?$` (case-insensitive) are pre-selected by default, naturally sorted so `Mic < Mic_1 < Mic_2 < … < Mic_10`. Each row:
+Lists all auto-detected capture inputs, ordered by physical USB hub socket and led by their `USB <token>` label. Inputs whose JACK client name matches `^Mic(_\d+)?$` (case-insensitive) are pre-selected by default. Channel numbers follow the USB port order, so channel N is always the same hub socket. Each row:
 - **Checkbox** — include/exclude from recording
 - **CH badge** — assigned channel number in the output file
 - **Presence dot** — green if the JACK port is live, dark if offline
@@ -491,6 +508,7 @@ Every recording produces a `<name>.json` alongside the WAV. `go_tone_utc` marks 
   "sample_rate": "16000",
   "channels": 4,
   "jack_ports": ["Mic:capture_1", "Mic_1:capture_1", "Mic_2:capture_1", "Mic_3:capture_1"],
+  "usb_ports": ["3-1.1", "3-1.2", "3-1.3", "3-1.4"],
   "bit_depth": "16",
   "downloaded": false,
   "protocol_entry": {

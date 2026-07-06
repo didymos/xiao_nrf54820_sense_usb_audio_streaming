@@ -27,9 +27,13 @@ sudo ./install.sh --enroll # interactive: plug mics in channel order to assign p
 ## Post-install: microphones
 
 Mics are **auto-detected** — every USB audio capture device is bridged into JACK
-at boot and named after its ALSA card id (`Mic`, `Mic_1`, `Mic_2`, …). No
-`MIC_PORTS` config to edit; re-plugging into a different USB port just works.
-The web UI lists all detected inputs and pre-selects the ones named like mics.
+at boot. No `MIC_PORTS` config to edit. The web UI lists all detected inputs and
+pre-selects the mics.
+
+**Channels follow the physical USB hub socket**, not the mic name: `3-1.1`→ch1,
+`3-1.2`→ch2, `3-1.3`→ch3, `3-1.4`→ch4. The XIAO boards all report the same USB
+serial, so the kernel names (`Mic`, `Mic_1`, …) can shuffle between boots — but
+channel N is always the same socket. Label your four hub sockets `1`–`4`.
 
 Confirm they came up:
 

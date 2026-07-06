@@ -813,6 +813,10 @@
       const sel  = recording.includes(port);
       const usb  = usbByJack[port] || "";
       const name = port.split(":")[0];
+      // The USB port token (hub socket) is the stable identifier — lead with it.
+      // The card-id name (Mic/Mic_1) can shuffle across reboots, so show it small.
+      const primary   = usb ? `USB ${esc(usb)}` : esc(name);
+      const secondary = usb ? esc(name) : "";
       return `
 <div class="mic-row${sel ? ' mic-selected' : ''}" id="microw-${esc(port)}"
      onclick="micRowClick('${esc(port)}')">
@@ -822,8 +826,8 @@
   <span class="ch-badge ch-empty" id="micch-${esc(port)}">CH1</span>
   <span class="mic-status-dot ok" id="micdot-${esc(port)}"></span>
   <div class="mic-info">
-    <div class="mic-jack-name">${esc(name)}</div>
-    ${usb ? `<div class="mic-usb-port">${esc(usb)}</div>` : ""}
+    <div class="mic-jack-name">${primary}</div>
+    ${secondary ? `<div class="mic-usb-port">${secondary}</div>` : ""}
   </div>
 </div>`;
     }).join("");
