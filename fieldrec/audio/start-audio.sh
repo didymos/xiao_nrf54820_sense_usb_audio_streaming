@@ -60,8 +60,18 @@ sleep 0.5
 # All mics go through zita-a2j so they share the same latency path.
 log "Starting jackd (dummy driver, rate=${SAMPLE_RATE} frames=${JACK_FRAMES}) ..."
 # NOTE: the dummy driver has no -n/nperiods option (only -C -P -r -m -p -w).
+#
+# -t 2000  : client timeout 2s (default 500ms). When jack_capture connects at
+#            record time the graph is reordered; a zita bridge can briefly stall
+#            longer than 500ms (USB audio through the hub), and the default
+#            watchdog would kill it — leaving a dead, silent port. 2s absorbs it.
+# -s       : soft-mode — on a timeout/xrun, temporarily skip the slow client
+#            instead of shutting the whole server down. Keeps the stack alive.
+JACK_TIMEOUT="${JACK_TIMEOUT:-2000}"
 jackd \
     -R -P70 \
+    -t "$JACK_TIMEOUT" \
+    -s \
     -d dummy \
     -r "$SAMPLE_RATE" \
     -p "$JACK_FRAMES" \
