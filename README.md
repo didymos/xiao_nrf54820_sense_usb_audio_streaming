@@ -69,7 +69,8 @@ cd app
 west build -b xiao_ble/nrf52840/sense -- \
     -DCONFIG_USB_DEVICE_PRODUCT=\"XIAO\ BLE\ Sense\ Mic\"
 ```
-
+                       ^^^^^^^^^^^^^^^
+Edit ```-DCONFIG_USB_DEVICE_PRODUCT´´´to chnage the USB identifier of your XIAO mic..  
 ### Flash
 
 ```sh
