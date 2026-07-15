@@ -64,7 +64,7 @@ static const struct device *dmic_dev = DEVICE_DT_GET(DT_NODELABEL(pdm0));
 /* USB Audio Class 1 microphone instance — use compat-based lookup so the
  * reference matches exactly how the driver calls DEVICE_DT_INST_DEFINE. */
 static const struct device *mic_dev =
-	DEVICE_DT_GET_ONE(zephyr_usb_audio_mic);
+	DEVICE_DT_GET_ONE(usb_audio_mic);
 
 /* ── USB state ────────────────────────────────────────────────────────── */
 
