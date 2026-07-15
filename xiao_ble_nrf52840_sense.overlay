@@ -14,8 +14,10 @@
 /* ── USB Audio Class 1 — microphone input terminal ──────────────────────── */
 / {
 	usb_audio_mic: usb-audio-mic {
-		compatible = "zephyr,usb-audio-mic";
-		mic-channel = "mono";
+		compatible = "usb-audio-mic";
+		sample-rate-hz = <16000>;
+		resolution = <16>;
+		channel-l;
 		feature-mute;
 		status = "okay";
 	};

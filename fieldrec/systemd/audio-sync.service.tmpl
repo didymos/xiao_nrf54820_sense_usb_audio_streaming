@@ -15,8 +15,10 @@ Environment="JACK_NO_AUDIO_RESERVATION=1"
 
 ExecStart=/opt/fieldrec/audio/start-audio.sh
 
-Restart=on-failure
-RestartSec=5
+# Restart=always: jackd exiting (even cleanly) must bring the whole stack back,
+# otherwise recordings after a jackd exit are silent until the next boot.
+Restart=always
+RestartSec=2
 TimeoutStartSec=60
 TimeoutStopSec=10
 

@@ -106,6 +106,29 @@
   #error-banner strong { display: block; margin-bottom: 4px; color: #e06060; font-size: 0.9rem; }
   #error-text { color: #c08080; word-break: break-word; }
 
+  /* ── Silent-channel warning banner ───────────────────────────────────────── */
+  #warn-banner {
+    display: none;
+    background: #2a2000;
+    border: 1px solid #6a5200;
+    border-radius: var(--btn-radius);
+    padding: 12px 14px;
+    margin-bottom: 12px;
+    font-size: 0.84rem;
+  }
+  #warn-banner strong { display: block; margin-bottom: 4px; color: #e0b060; font-size: 0.9rem; }
+  #warn-text { color: #c0a060; word-break: break-word; }
+  #warn-banner .warn-dismiss {
+    float: right; cursor: pointer; color: #8a7020; font-weight: 700;
+    padding: 0 4px; -webkit-tap-highlight-color: transparent;
+  }
+  .rec-warn {
+    font-size: 0.72rem;
+    color: #e0a040;
+    margin-top: 4px;
+    word-break: break-word;
+  }
+
   /* ── Study protocol ──────────────────────────────────────────────────────── */
   .proto-header {
     display: flex;
@@ -431,6 +454,18 @@
 
   /* ── Footer ──────────────────────────────────────────────────────────────── */
   #footer { font-size: 0.68rem; color: #444; text-align: center; margin-top: 16px; }
+
+  /* ── Sync flash overlay ──────────────────────────────────────────────────── */
+  #sync-flash {
+    position: fixed;
+    inset: 0;
+    background: #fff;
+    pointer-events: none;
+    opacity: 0;
+    z-index: 9999;
+    transition: opacity 80ms ease-out;
+  }
+  #sync-flash.flash-on { opacity: 1; transition: none; }
 </style>
 </head>
 <body>
@@ -445,6 +480,12 @@
 <div id="error-banner">
   <strong>Error</strong>
   <span id="error-text"></span>
+</div>
+
+<div id="warn-banner">
+  <span class="warn-dismiss" onclick="dismissWarn()">&times;</span>
+  <strong>&#9888; Silent channel(s) detected</strong>
+  <span id="warn-text"></span>
 </div>
 
 <!-- Study Protocol -->
@@ -485,6 +526,7 @@
       Channels&nbsp;<span id="ch-count" style="color:var(--text);font-weight:400;font-size:0.85rem"></span>
     </div>
     <div style="display:flex;gap:6px">
+      <button class="btn-sm" id="mics-refresh-btn" onclick="refreshMics()" title="Rescan inputs">&#8635; Refresh</button>
       <button class="btn-sm" id="mics-all-btn" onclick="micToggleAll()" style="display:none">All</button>
       <button class="btn-sm btn-dl" id="mics-apply-btn" onclick="applyMicSelection()" disabled style="display:none">Apply</button>
     </div>
@@ -517,6 +559,8 @@
 
 <div id="footer">pi time: —</div>
 
+<div id="sync-flash" aria-hidden="true"></div>
+
 <script>
 (function () {
   "use strict";
@@ -527,6 +571,106 @@
   let connErrCount = 0;
   let countdownBeeps = 3;
   let minFreeMb    = 500;
+  // Prevents poll-triggered updateUI from double-firing the sync tone when
+  // doStart already fired it on the fetch response.
+  let _syncToneFired = false;
+  // Set when a recording is saved; the next recordings refresh inspects the
+  // newest file for silent channels and raises the warning banner.
+  let _checkSilentNext = false;
+
+  // ── Web Audio (tones & sync) ───────────────────────────────────────────────
+  let _audioCtx = null;
+
+  function getAudioCtx() {
+    if (!_audioCtx || _audioCtx.state === "closed") {
+      _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    return _audioCtx;
+  }
+
+  // Call from a user-gesture handler to unlock iOS/Android AudioContext.
+  function prewarmAudio() {
+    try {
+      const ctx = getAudioCtx();
+      if (ctx.state === "suspended") ctx.resume();
+      const buf = ctx.createBuffer(1, 1, ctx.sampleRate);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.start(0);
+    } catch (e) {}
+  }
+
+  // Play a sine tone at freq/Hz for dur/s starting at audioCtx time t0.
+  // Returns the end time (t0 + dur).
+  function _playTone(freq, dur, t0, gain) {
+    const ctx = getAudioCtx();
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(gain, t0);
+    g.gain.linearRampToValueAtTime(0, t0 + dur);
+    g.connect(ctx.destination);
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freq, t0);
+    osc.connect(g);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.005);
+    return t0 + dur;
+  }
+
+  // Play named browser-side state-transition tone.
+  function playStateTone(name) {
+    try {
+      const ctx = getAudioCtx();
+      if (ctx.state === "suspended") ctx.resume();
+      const t = ctx.currentTime + 0.005;
+      if (name === "saved") {
+        const t2 = _playTone(880,  0.15, t,    0.55);
+        _playTone(1100, 0.15, t2 + 0.04, 0.55);
+      } else if (name === "error") {
+        const t2 = _playTone(300, 0.15, t,    0.55);
+        _playTone(200, 0.15, t2 + 0.04, 0.55);
+      }
+    } catch (e) {}
+  }
+
+  // Sync tone: 8 ms white-noise burst (sharp onset) + 72 ms 1 kHz sine.
+  // The noise-burst onset is the sync reference; flash fires at the same time.
+  function playSyncTone() {
+    try {
+      const ctx = getAudioCtx();
+      if (ctx.state === "suspended") ctx.resume();
+      const t0 = ctx.currentTime + 0.005;
+      const sr = ctx.sampleRate;
+
+      // White-noise burst — 8 ms, hard onset, rapid decay
+      const nBuf = ctx.createBuffer(1, Math.ceil(sr * 0.008), sr);
+      const nd   = nBuf.getChannelData(0);
+      for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+      const nSrc = ctx.createBufferSource();
+      const nGain = ctx.createGain();
+      nSrc.buffer = nBuf;
+      nGain.gain.setValueAtTime(1.0, t0);
+      nGain.gain.linearRampToValueAtTime(0, t0 + 0.008);
+      nSrc.connect(nGain);
+      nGain.connect(ctx.destination);
+      nSrc.start(t0);
+
+      // 1000 Hz sine tail — 72 ms with fade-out
+      _playTone(1000, 0.072, t0 + 0.008, 0.75);
+
+      // Flash fires at t0 — convert to wall-clock delay
+      const msDelay = Math.max(0, (t0 - ctx.currentTime) * 1000);
+      setTimeout(triggerFlash, msDelay);
+    } catch (e) {}
+  }
+
+  // White full-screen flash (hold 1 frame, then fade out via CSS transition).
+  function triggerFlash() {
+    const el = document.getElementById("sync-flash");
+    el.classList.add("flash-on");
+    requestAnimationFrame(() => requestAnimationFrame(() => el.classList.remove("flash-on")));
+  }
 
   // Protocol
   let protoTotal   = 0;
@@ -577,6 +721,22 @@
     lastState = d.state || "IDLE";
     countdownBeeps = d.countdown_beeps || 3;
 
+    // Browser-side state-transition tones
+    if (prevState !== lastState) {
+      if (prevState !== "RECORDING" && lastState === "RECORDING") {
+        // Entering RECORDING: play sync tone unless doStart already did
+        if (!_syncToneFired) playSyncTone();
+        _syncToneFired = false;
+      }
+      if (prevState === "STOPPING" && lastState === "IDLE") {
+        playStateTone("saved");
+        _checkSilentNext = true;  // inspect the just-saved file for dead channels
+      }
+      if (prevState !== "ERROR" && lastState === "ERROR") {
+        playStateTone("error");
+      }
+    }
+
     updateButton(d);
     updateTimer(d);
     updateDisk(d);
@@ -608,14 +768,10 @@
         btn.disabled = false;
         btn.innerHTML = "START";
         break;
-      case "ARMING": {
+      case "ARMING":
         btn.disabled = true;
-        const bl = Math.max(0, countdownBeeps - Math.floor(d.elapsed_seconds));
-        btn.innerHTML = bl > 0
-          ? `<span class="spinner"></span><span>${bl}</span>`
-          : `<span class="spinner"></span><span>Starting&hellip;</span>`;
+        btn.innerHTML = `<span class="spinner"></span><span>Starting&hellip;</span>`;
         break;
-      }
       case "RECORDING":
         btn.disabled = false;
         btn.innerHTML = `<span class="pulse-dot"></span><span>STOP</span>`;
@@ -643,8 +799,7 @@
       el.textContent = String(Math.floor(s / 60)).padStart(2,"0") + ":" + String(s % 60).padStart(2,"0");
       el.className = "active-rec";
     } else if (d.state === "ARMING") {
-      const bl = Math.max(0, countdownBeeps - Math.floor(elapsed));
-      el.textContent = bl > 0 ? String(bl) : "…";
+      el.textContent = "…";
       el.className = "active-arm";
     } else {
       el.textContent = "—";
@@ -691,6 +846,10 @@
       const sel  = recording.includes(port);
       const usb  = usbByJack[port] || "";
       const name = port.split(":")[0];
+      // The USB port token (hub socket) is the stable identifier — lead with it.
+      // The card-id name (Mic/Mic_1) can shuffle across reboots, so show it small.
+      const primary   = usb ? `USB ${esc(usb)}` : esc(name);
+      const secondary = usb ? esc(name) : "";
       return `
 <div class="mic-row${sel ? ' mic-selected' : ''}" id="microw-${esc(port)}"
      onclick="micRowClick('${esc(port)}')">
@@ -700,8 +859,8 @@
   <span class="ch-badge ch-empty" id="micch-${esc(port)}">CH1</span>
   <span class="mic-status-dot ok" id="micdot-${esc(port)}"></span>
   <div class="mic-info">
-    <div class="mic-jack-name">${esc(name)}</div>
-    ${usb ? `<div class="mic-usb-port">${esc(usb)}</div>` : ""}
+    <div class="mic-jack-name">${primary}</div>
+    ${secondary ? `<div class="mic-usb-port">${secondary}</div>` : ""}
   </div>
 </div>`;
     }).join("");
@@ -750,6 +909,19 @@
       .filter(c => c.checked)
       .map(c => c.id.replace("micchk-", ""));
   }
+
+  // Force a re-scan of inputs: discard pending local changes and re-render
+  // from a fresh server poll (audio-sync brings inputs in/out live).
+  window.refreshMics = function () {
+    const btn = document.getElementById("mics-refresh-btn");
+    micDirty = false;
+    document.getElementById("mics-apply-btn").disabled = true;
+    const prev = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = "&#8635; …";
+    poll();
+    setTimeout(() => { btn.disabled = false; btn.innerHTML = prev; }, 500);
+  };
 
   window.micToggleAll = function () {
     const checks = [...document.querySelectorAll(".mic-row-check")];
@@ -901,16 +1073,37 @@
   };
 
   function doStart() {
+    // Prewarm AudioContext in user-gesture context (required on iOS/Android)
+    prewarmAudio();
+    dismissWarn();  // clear any stale silent-channel warning from the last take
+
     let session = document.getElementById("session-input").value.trim();
     if (!session && protoEntry) session = protoEntry.suffix;
     if (!session) session = "take";
+
+    // Show arming state immediately without waiting for server response
+    lastState = "ARMING";
+    updateButton({ state: "ARMING", elapsed_seconds: 0 });
+    updateTimer({ state: "ARMING", elapsed_seconds: 0 });
+
     fetch("/api/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session }),
     })
     .then(r => r.json().then(b => ({ ok: r.ok, b })))
-    .then(({ ok, b }) => { if (!ok) showError(b.detail || "Start failed"); })
+    .then(({ ok, b }) => {
+      if (!ok) {
+        showError(b.detail || "Start failed");
+      } else if (b.state === "RECORDING") {
+        // Recording is live — fire sync tone + flash immediately
+        playSyncTone();
+        _syncToneFired = true; // tell poll-triggered updateUI not to double-fire
+        lastState = "RECORDING";
+        updateButton({ state: "RECORDING" });
+        updateTimer({ state: "RECORDING", elapsed_seconds: 0 });
+      }
+    })
     .catch(e => showError("Network: " + e));
   }
 
@@ -930,6 +1123,14 @@
     document.getElementById("error-text").textContent = msg;
     document.getElementById("error-banner").style.display = "block";
   }
+
+  function showWarn(msg) {
+    document.getElementById("warn-text").textContent = msg;
+    document.getElementById("warn-banner").style.display = "block";
+  }
+  window.dismissWarn = function () {
+    document.getElementById("warn-banner").style.display = "none";
+  };
 
   // ── Recordings ─────────────────────────────────────────────────────────────
   function loadRecordings() {
@@ -955,10 +1156,32 @@
       .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
   }
 
+  // Describe which channels came out silent (dropped mic / no signal).
+  function silentInfo(sidecar) {
+    const sc = sidecar && sidecar.silent_channels;
+    if (!sc || !sc.length) return null;
+    const labels = sc.map(c => "CH" + c.channel + (c.usb_port ? ` (${c.usb_port})` : ""));
+    return { count: sc.length, labels };
+  }
+  function silentWarnLine(sidecar) {
+    const info = silentInfo(sidecar);
+    if (!info) return "";
+    return `<div class="rec-warn">&#9888; ${info.count} silent channel${info.count>1?"s":""}: ${esc(info.labels.join(", "))}</div>`;
+  }
+
   function renderRecordings(list) {
     const el = document.getElementById("rec-list");
     if (!list || list.length === 0) {
       el.innerHTML = '<div id="no-recs">No recordings yet.</div>'; return;
+    }
+
+    // Post-record check: warn if the just-saved (newest) file has dead channels.
+    if (_checkSilentNext) {
+      _checkSilentNext = false;
+      const info = silentInfo(list[0] && list[0].sidecar);
+      if (info) {
+        showWarn(info.labels.join(", ") + " — check the mic(s)/USB connection.");
+      }
     }
     el.innerHTML = list.map(r => {
       const dlBadge = r.downloaded ? `<span class="dl-badge">&#10003; downloaded</span>` : "";
@@ -972,6 +1195,7 @@
   <div class="rec-info">
     <div class="rec-name">${esc(r.name)}${dlBadge}</div>
     <div class="rec-meta">${meta}${ch}${protoTitle}</div>
+    ${silentWarnLine(r.sidecar)}
   </div>
   <div class="rec-actions">
     <button class="btn-sm btn-dl" onclick="dlRec('${esc(r.name)}',this)">Download</button>

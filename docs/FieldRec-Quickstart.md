@@ -24,22 +24,28 @@ sudo ./install.sh --enroll # interactive: plug mics in channel order to assign p
 
 ---
 
-## Post-install: verify mic ports
+## Post-install: microphones
 
-ALSA card numbers change at boot — USB port paths do not. Verify config matches hardware:
+Mics are **auto-detected** — every USB audio capture device is bridged into JACK
+at boot. No `MIC_PORTS` config to edit. The web UI lists all detected inputs and
+pre-selects the mics.
+
+**Channels follow the physical USB hub socket**, not the mic name: `3-1.1`→ch1,
+`3-1.2`→ch2, `3-1.3`→ch3, `3-1.4`→ch4. The XIAO boards all report the same USB
+serial, so the kernel names (`Mic`, `Mic_1`, …) can shuffle between boots — but
+channel N is always the same socket. Label your four hub sockets `1`–`4`.
+
+Confirm they came up:
 
 ```bash
-for c in /sys/class/sound/card[0-9]*/device; do
-  echo "port=$(basename $(readlink -f $c) | cut -d: -f1)  name=$(cat $(dirname $c)/id)"
-done
+jack_lsp    # should list Mic:capture_1  Mic_1:capture_1  …
 ```
 
-If ports differ from `MIC_PORTS` in `/etc/fieldrec/fieldrec.conf`:
+If nothing appears, check the service and that the mics enumerate:
 
 ```bash
-sudo nano /etc/fieldrec/fieldrec.conf
-# Fix MIC_PORTS="3-2.1 3-2.2 3-2.3 3-2.4"
-# Set  SAMPLE_RATE=16000
+journalctl -u audio-sync --boot -n 40 --no-pager
+arecord -l
 sudo systemctl restart audio-sync
 ```
 
@@ -86,11 +92,13 @@ Walk across the room and back, 3 times.
 
 | Key | XIAO value | Notes |
 |---|---|---|
-| `MIC_PORTS` | `"3-2.1 3-2.2 …"` | USB port tokens, in channel order |
 | `SAMPLE_RATE` | `16000` | Must match mic hardware |
-| `COUNTDOWN_BEEPS` | `3` | Beeps before recording starts |
 | `RECORDINGS_DIR` | `/mnt/ssd/recordings` | WAV output directory |
-| `OUT_DEVICE` | `plughw:CARD=Speaker` | ALSA device for tones |
+| `OUT_DEVICE` | `plughw:CARD=Speaker` | ALSA device for fallback tones |
+
+Mics are auto-detected — there is no `MIC_PORTS` to set. Recording start,
+the sync tone, and screen flash are handled in the browser; `COUNTDOWN_BEEPS`
+is no longer used.
 
 ---
 
@@ -111,9 +119,9 @@ jack_lsp                                  # list active JACK ports
 
 | Symptom | Fix |
 |---|---|
-| "Cannot resolve card for port=…" (all mics skipped) | Update `MIC_PORTS` in conf → restart `audio-sync` |
+| No mics in web UI / `jack_lsp` empty | Check `arecord -l`, then `sudo systemctl restart audio-sync` |
 | Sample rate mismatch / JACK won't start | Set `SAMPLE_RATE=16000` in conf |
 | "JACK server is not running" | `sudo systemctl restart audio-sync` then `fieldrec-web` |
-| Inter-channel time offset | Ensure `JACK_PORTS` uses `mic1:capture_1 …` not `system:capture_1` |
 | Frequent xruns | Increase `JACK_FRAMES` (512 → 1024) in conf |
+| No sync tone / flash on phone | Tap START once to unlock browser audio (iOS/Android gesture) |
 | `RuntimeError: Form data requires "python-multipart"` | `/opt/fieldrec/.venv/bin/pip install python-multipart && sudo systemctl restart fieldrec-web` |
