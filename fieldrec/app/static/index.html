@@ -106,6 +106,29 @@
   #error-banner strong { display: block; margin-bottom: 4px; color: #e06060; font-size: 0.9rem; }
   #error-text { color: #c08080; word-break: break-word; }
 
+  /* ── Silent-channel warning banner ───────────────────────────────────────── */
+  #warn-banner {
+    display: none;
+    background: #2a2000;
+    border: 1px solid #6a5200;
+    border-radius: var(--btn-radius);
+    padding: 12px 14px;
+    margin-bottom: 12px;
+    font-size: 0.84rem;
+  }
+  #warn-banner strong { display: block; margin-bottom: 4px; color: #e0b060; font-size: 0.9rem; }
+  #warn-text { color: #c0a060; word-break: break-word; }
+  #warn-banner .warn-dismiss {
+    float: right; cursor: pointer; color: #8a7020; font-weight: 700;
+    padding: 0 4px; -webkit-tap-highlight-color: transparent;
+  }
+  .rec-warn {
+    font-size: 0.72rem;
+    color: #e0a040;
+    margin-top: 4px;
+    word-break: break-word;
+  }
+
   /* ── Study protocol ──────────────────────────────────────────────────────── */
   .proto-header {
     display: flex;
@@ -459,6 +482,12 @@
   <span id="error-text"></span>
 </div>
 
+<div id="warn-banner">
+  <span class="warn-dismiss" onclick="dismissWarn()">&times;</span>
+  <strong>&#9888; Silent channel(s) detected</strong>
+  <span id="warn-text"></span>
+</div>
+
 <!-- Study Protocol -->
 <div class="card">
   <div class="proto-header">
@@ -545,6 +574,9 @@
   // Prevents poll-triggered updateUI from double-firing the sync tone when
   // doStart already fired it on the fetch response.
   let _syncToneFired = false;
+  // Set when a recording is saved; the next recordings refresh inspects the
+  // newest file for silent channels and raises the warning banner.
+  let _checkSilentNext = false;
 
   // ── Web Audio (tones & sync) ───────────────────────────────────────────────
   let _audioCtx = null;
@@ -698,6 +730,7 @@
       }
       if (prevState === "STOPPING" && lastState === "IDLE") {
         playStateTone("saved");
+        _checkSilentNext = true;  // inspect the just-saved file for dead channels
       }
       if (prevState !== "ERROR" && lastState === "ERROR") {
         playStateTone("error");
@@ -1042,6 +1075,7 @@
   function doStart() {
     // Prewarm AudioContext in user-gesture context (required on iOS/Android)
     prewarmAudio();
+    dismissWarn();  // clear any stale silent-channel warning from the last take
 
     let session = document.getElementById("session-input").value.trim();
     if (!session && protoEntry) session = protoEntry.suffix;
@@ -1090,6 +1124,14 @@
     document.getElementById("error-banner").style.display = "block";
   }
 
+  function showWarn(msg) {
+    document.getElementById("warn-text").textContent = msg;
+    document.getElementById("warn-banner").style.display = "block";
+  }
+  window.dismissWarn = function () {
+    document.getElementById("warn-banner").style.display = "none";
+  };
+
   // ── Recordings ─────────────────────────────────────────────────────────────
   function loadRecordings() {
     fetch("/api/recordings", { cache: "no-store" })
@@ -1114,10 +1156,32 @@
       .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
   }
 
+  // Describe which channels came out silent (dropped mic / no signal).
+  function silentInfo(sidecar) {
+    const sc = sidecar && sidecar.silent_channels;
+    if (!sc || !sc.length) return null;
+    const labels = sc.map(c => "CH" + c.channel + (c.usb_port ? ` (${c.usb_port})` : ""));
+    return { count: sc.length, labels };
+  }
+  function silentWarnLine(sidecar) {
+    const info = silentInfo(sidecar);
+    if (!info) return "";
+    return `<div class="rec-warn">&#9888; ${info.count} silent channel${info.count>1?"s":""}: ${esc(info.labels.join(", "))}</div>`;
+  }
+
   function renderRecordings(list) {
     const el = document.getElementById("rec-list");
     if (!list || list.length === 0) {
       el.innerHTML = '<div id="no-recs">No recordings yet.</div>'; return;
+    }
+
+    // Post-record check: warn if the just-saved (newest) file has dead channels.
+    if (_checkSilentNext) {
+      _checkSilentNext = false;
+      const info = silentInfo(list[0] && list[0].sidecar);
+      if (info) {
+        showWarn(info.labels.join(", ") + " — check the mic(s)/USB connection.");
+      }
     }
     el.innerHTML = list.map(r => {
       const dlBadge = r.downloaded ? `<span class="dl-badge">&#10003; downloaded</span>` : "";
@@ -1131,6 +1195,7 @@
   <div class="rec-info">
     <div class="rec-name">${esc(r.name)}${dlBadge}</div>
     <div class="rec-meta">${meta}${ch}${protoTitle}</div>
+    ${silentWarnLine(r.sidecar)}
   </div>
   <div class="rec-actions">
     <button class="btn-sm btn-dl" onclick="dlRec('${esc(r.name)}',this)">Download</button>

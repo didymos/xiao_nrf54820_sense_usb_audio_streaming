@@ -136,6 +136,68 @@ def _write_silent_wav(path: str, duration_ms: int = 200, sr: int = 48000) -> Non
         wf.writeframes(b"\x00\x00" * n_frames)
 
 
+# A channel whose peak is below this is treated as dead (dropped mic / no signal).
+# A live XIAO mic in a quiet room still reads ~1e-3; a dropped port reads 0.
+_SILENCE_PEAK = 5e-4
+
+
+def _wav_channel_peaks(path: str) -> Optional[list[float]]:
+    """Per-channel peak amplitude (0.0..1.0) of a PCM WAV, or None if unreadable.
+    Handles standard PCM and WAVE_FORMAT_EXTENSIBLE (multichannel), 16- and 24-bit.
+    Python's `wave` module can't read jack_capture's >2ch WAVEX files, so we parse
+    the RIFF chunks directly."""
+    import struct
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except Exception:
+        return None
+    if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        return None
+    fmt = audio = None
+    pos = 12
+    while pos + 8 <= len(data):
+        cid = data[pos:pos + 4]
+        sz = struct.unpack("<I", data[pos + 4:pos + 8])[0]
+        chunk = data[pos + 8:pos + 8 + sz]
+        if cid == b"fmt ":
+            fmt = chunk
+        elif cid == b"data":
+            audio = chunk
+        pos += 8 + sz + (sz & 1)
+    if not fmt or audio is None or len(fmt) < 16:
+        return None
+    tag = struct.unpack("<H", fmt[0:2])[0]
+    ch = struct.unpack("<H", fmt[2:4])[0]
+    bits = struct.unpack("<H", fmt[14:16])[0]
+    if tag == 0xFFFE and len(fmt) >= 26:          # WAVE_FORMAT_EXTENSIBLE
+        tag = struct.unpack("<H", fmt[24:26])[0]  # real format from SubFormat
+    if ch < 1 or tag != 1:                         # integer PCM only
+        return None
+    try:
+        if bits == 16:
+            usable = (len(audio) // (2 * ch)) * (2 * ch)
+            arr = np.frombuffer(audio[:usable], dtype="<i2").reshape(-1, ch)
+            scale = 32768.0
+        elif bits == 24:
+            usable = (len(audio) // (3 * ch)) * (3 * ch)
+            b = np.frombuffer(audio[:usable], dtype=np.uint8).reshape(-1, 3)
+            val = (b[:, 0].astype(np.int32)
+                   | (b[:, 1].astype(np.int32) << 8)
+                   | (b[:, 2].astype(np.int32) << 16))
+            val = np.where(val & 0x800000, val - 0x1000000, val)
+            arr = val.reshape(-1, ch)
+            scale = 8388608.0
+        else:
+            return None
+        if arr.shape[0] == 0:
+            return [0.0] * ch
+        peaks = np.max(np.abs(arr.astype(np.float32)), axis=0) / scale
+        return [round(float(p), 5) for p in peaks]
+    except Exception:
+        return None
+
+
 # ── Tone generation ───────────────────────────────────────────────────────────
 # Each entry is a list of (freq_hz, duration_s) segments played in sequence.
 _TONE_SPECS: dict[str, list[tuple[float, float]]] = {
@@ -684,6 +746,25 @@ class RecorderController:
                 usb_ports = [
                     usb_lookup.get(p.split(":", 1)[0], "") for p in recorded_ports
                 ]
+                # Post-record check: per-channel peak level. A dropped mic (e.g.
+                # a USB device that fell off the bus mid-session) records as a
+                # dead, silent channel — flag those so the UI can warn.
+                peaks = None if MOCK_MODE else _wav_channel_peaks(str(out_path))
+                silent_channels: list[dict[str, Any]] = []
+                if peaks:
+                    for i, pk in enumerate(peaks):
+                        if pk < _SILENCE_PEAK:
+                            silent_channels.append({
+                                "channel": i + 1,
+                                "jack_port": recorded_ports[i] if i < len(recorded_ports) else "",
+                                "usb_port": usb_ports[i] if i < len(usb_ports) else "",
+                            })
+                    if silent_channels:
+                        log.warning(
+                            "Silent channel(s) in %s: %s",
+                            out_path.name,
+                            [c["channel"] for c in silent_channels],
+                        )
                 sidecar: dict[str, Any] = {
                     "file": out_path.name,
                     "start_time_utc": (
@@ -699,6 +780,8 @@ class RecorderController:
                     "channels": len(recorded_ports),
                     "jack_ports": recorded_ports,
                     "usb_ports": usb_ports,
+                    "channel_peaks": peaks,
+                    "silent_channels": silent_channels,
                     "bit_depth": cfg("BIT_DEPTH", "16"),
                     "downloaded": False,
                 }

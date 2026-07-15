@@ -509,6 +509,8 @@ Every recording produces a `<name>.json` alongside the WAV. `go_tone_utc` marks 
   "channels": 4,
   "jack_ports": ["Mic:capture_1", "Mic_1:capture_1", "Mic_2:capture_1", "Mic_3:capture_1"],
   "usb_ports": ["3-1.1", "3-1.2", "3-1.3", "3-1.4"],
+  "channel_peaks": [0.42, 0.38, 0.0, 0.51],
+  "silent_channels": [{"channel": 3, "jack_port": "Mic_2:capture_1", "usb_port": "3-1.3"}],
   "bit_depth": "16",
   "downloaded": false,
   "protocol_entry": {
