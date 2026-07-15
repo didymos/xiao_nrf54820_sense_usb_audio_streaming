@@ -15,7 +15,9 @@
 / {
 	usb_audio_mic: usb-audio-mic {
 		compatible = "usb-audio-mic";
-		mic-channel = "mono";
+		sample-rate-hz = <16000>;
+		resolution = <16>;
+		channel-l;
 		feature-mute;
 		status = "okay";
 	};

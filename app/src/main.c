@@ -24,7 +24,7 @@ LOG_MODULE_REGISTER(usb_mic, LOG_LEVEL_INF);
 
 /* ── Audio constants ──────────────────────────────────────────────────── */
 
-#define SAMPLE_RATE_HZ    48000
+#define SAMPLE_RATE_HZ    16000
 #define SAMPLE_WIDTH_BITS 16
 #define SAMPLE_WIDTH_BYTES (SAMPLE_WIDTH_BITS / 8)
 #define CHANNELS          1
