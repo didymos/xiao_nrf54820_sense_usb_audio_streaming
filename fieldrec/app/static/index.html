@@ -747,7 +747,8 @@
     updateMicSelection(
       d.available_capture_ports || [],
       d.recording_ports         || [],
-      d.usb_by_jack             || {}
+      d.usb_by_jack             || {},
+      d.serial_by_jack          || {}
     );
 
     if (prevState !== "IDLE" && lastState === "IDLE") {
@@ -808,7 +809,7 @@
   }
 
   // ── Mic selection ──────────────────────────────────────────────────────────
-  function updateMicSelection(available, recording, usbByJack) {
+  function updateMicSelection(available, recording, usbByJack, serialByJack) {
     serverAvailable      = available.slice();
     serverRecordingPorts = recording.slice();
 
@@ -829,7 +830,7 @@
 
     // Only re-render if not dirty (to preserve user's pending changes)
     if (!micDirty) {
-      renderMicList(available, recording, usbByJack);
+      renderMicList(available, recording, usbByJack, serialByJack || {});
     } else {
       // Just refresh presence dots without resetting checkboxes
       available.forEach(port => {
@@ -840,16 +841,18 @@
     }
   }
 
-  function renderMicList(available, recording, usbByJack) {
+  function renderMicList(available, recording, usbByJack, serialByJack) {
+    serialByJack = serialByJack || {};
     const listEl = document.getElementById("mic-list");
     listEl.innerHTML = available.map(port => {
-      const sel  = recording.includes(port);
-      const usb  = usbByJack[port] || "";
-      const name = port.split(":")[0];
-      // The USB port token (hub socket) is the stable identifier — lead with it.
-      // The card-id name (Mic/Mic_1) can shuffle across reboots, so show it small.
-      const primary   = usb ? `USB ${esc(usb)}` : esc(name);
-      const secondary = usb ? esc(name) : "";
+      const sel    = recording.includes(port);
+      const usb    = usbByJack[port] || "";
+      const serial = serialByJack[port] || "";
+      const name   = port.split(":")[0];
+      // Lead with the USB serial (per-device identity — determines the channel).
+      // Fall back to the USB socket, then the card-id name. Show the socket small.
+      const primary   = serial ? esc(serial) : (usb ? `USB ${esc(usb)}` : esc(name));
+      const secondary = serial ? (usb ? `USB ${esc(usb)}` : esc(name)) : (usb ? esc(name) : "");
       return `
 <div class="mic-row${sel ? ' mic-selected' : ''}" id="microw-${esc(port)}"
      onclick="micRowClick('${esc(port)}')">
@@ -1160,7 +1163,10 @@
   function silentInfo(sidecar) {
     const sc = sidecar && sidecar.silent_channels;
     if (!sc || !sc.length) return null;
-    const labels = sc.map(c => "CH" + c.channel + (c.usb_port ? ` (${c.usb_port})` : ""));
+    const labels = sc.map(c => {
+      const id = c.serial || c.usb_port || "";
+      return "CH" + c.channel + (id ? ` (${id})` : "");
+    });
     return { count: sc.length, labels };
   }
   function silentWarnLine(sidecar) {

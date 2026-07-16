@@ -371,54 +371,93 @@ def _natural_key(s: str) -> tuple[Any, ...]:
     )
 
 
+def _read_card_attr(card_dir: Path) -> tuple[str, str, str]:
+    """Return (sanitized_card_id, usb_port_token, usb_serial) for one sound card.
+    The card's `device` symlink points at the USB *interface* (…/3-1.1:1.0); the
+    USB port token is that basename's prefix, and the serial lives on the parent
+    USB *device* dir (…/3-1.1/serial). Any field may be "" if unavailable."""
+    try:
+        card_id = (card_dir / "id").read_text().strip()
+    except Exception:
+        return "", "", ""
+    safe = re.sub(r"[^A-Za-z0-9_]", "_", card_id)
+    port = serial = ""
+    try:
+        iface = os.path.realpath(str(card_dir / "device"))   # …/3-1.1/3-1.1:1.0
+        port = os.path.basename(iface).split(":", 1)[0]       # 3-1.1
+        sp = os.path.join(os.path.dirname(iface), "serial")   # …/3-1.1/serial
+        if os.path.exists(sp):
+            with open(sp) as fh:
+                serial = fh.read().strip()
+    except Exception:
+        pass
+    return safe, port, serial
+
+
 def _usb_ports_by_cardid() -> dict[str, str]:
-    """Map each ALSA card id (sanitized like the JACK client name) to its
-    stable USB port token (e.g. "3-1.1"). The port token's leaf (.1/.2/…) is
-    the physical hub socket — stable across reboots and re-enumeration."""
+    """Map each sanitized ALSA card id to its stable USB port token (e.g. "3-1.1")."""
     result: dict[str, str] = {}
     try:
         for entry in sorted(Path("/sys/class/sound").glob("card[0-9]*")):
-            try:
-                card_id = (entry / "id").read_text().strip()
-                dev = os.path.realpath(str(entry / "device"))
-                port = os.path.basename(dev).split(":", 1)[0]
-            except Exception:
-                continue
-            if card_id and port:
-                safe = re.sub(r"[^A-Za-z0-9_]", "_", card_id)
-                result[safe] = port
+            cid, port, _ = _read_card_attr(entry)
+            if cid and port:
+                result[cid] = port
     except Exception:
         pass
     return result
 
 
-def _port_sort_key(port: str, usb: dict[str, str]) -> tuple[Any, ...]:
-    """Order capture ports by their physical USB port token (hub socket), so
-    channel N is always the same physical socket regardless of which card id
-    the kernel happened to assign this boot. Ports with no USB mapping sort
-    last, by name."""
+def _usb_serials_by_cardid() -> dict[str, str]:
+    """Map each sanitized ALSA card id to its USB serial number (e.g.
+    "XIAO-MIC-003"). This is the per-physical-device identity: it stays with the
+    board no matter which hub socket it is plugged into."""
+    result: dict[str, str] = {}
+    try:
+        for entry in sorted(Path("/sys/class/sound").glob("card[0-9]*")):
+            cid, _, serial = _read_card_attr(entry)
+            if cid and serial:
+                result[cid] = serial
+    except Exception:
+        pass
+    return result
+
+
+def _channel_sort_key(
+    port: str, serials: dict[str, str], usb: dict[str, str]
+) -> tuple[Any, ...]:
+    """Channel ordering key. Primary: USB serial number (per-device identity, so
+    XIAO-MIC-001 → ch1 … regardless of socket). Fallback for a board with no
+    serial: USB hub socket, then the JACK client name. Serialed devices always
+    sort ahead of non-serialed ones so the numbered boards take the low channels."""
     client = port.split(":", 1)[0]
+    ser = serials.get(client)
+    if ser:
+        return (0,) + _natural_key(ser)
     token = usb.get(client)
     if token:
-        return (0,) + _natural_key(token)
-    return (1,) + _natural_key(port)
+        return (1,) + _natural_key(token)
+    return (2,) + _natural_key(port)
 
 
-def sort_ports_by_usb(ports: list[str]) -> list[str]:
-    """Sort JACK capture ports into stable channel order by USB hub socket."""
-    usb = {} if MOCK_MODE else _usb_ports_by_cardid()
-    return sorted(ports, key=lambda p: _port_sort_key(p, usb))
+def sort_ports_for_channels(ports: list[str]) -> list[str]:
+    """Sort JACK capture ports into stable channel order: by USB serial number,
+    falling back to hub socket then name."""
+    if MOCK_MODE:
+        serials, usb = {}, {}
+    else:
+        serials, usb = _usb_serials_by_cardid(), _usb_ports_by_cardid()
+    return sorted(ports, key=lambda p: _channel_sort_key(p, serials, usb))
 
 
 def default_mic_ports() -> list[str]:
     """Live capture ports whose JACK client is named like a mic (Mic, Mic_1, …),
-    ordered by physical USB hub socket. This is the default recording selection
-    when the user hasn't picked channels explicitly."""
+    ordered by USB serial number (per-device identity). This is the default
+    recording selection when the user hasn't picked channels explicitly."""
     mics = [
         p for p in cached_jack_lsp()
         if "capture" in p.lower() and _MIC_NAME_RE.match(p.split(":", 1)[0])
     ]
-    return sort_ports_by_usb(mics)
+    return sort_ports_for_channels(mics)
 
 
 def get_active_ports() -> list[str]:
@@ -740,11 +779,16 @@ class RecorderController:
                 # Capture current protocol entry before advancing
                 proto = _get_protocol_snapshot()
                 recorded_ports = get_active_ports()
-                # Document the physical hub socket behind each channel so the
-                # recording is self-describing (channel N ← USB port token).
+                # Document the physical device (USB serial) and hub socket behind
+                # each channel so the recording is self-describing:
+                # channel N ← serial ← usb port.
                 usb_lookup = {} if MOCK_MODE else _usb_ports_by_cardid()
+                ser_lookup = {} if MOCK_MODE else _usb_serials_by_cardid()
                 usb_ports = [
                     usb_lookup.get(p.split(":", 1)[0], "") for p in recorded_ports
+                ]
+                serials = [
+                    ser_lookup.get(p.split(":", 1)[0], "") for p in recorded_ports
                 ]
                 # Post-record check: per-channel peak level. A dropped mic (e.g.
                 # a USB device that fell off the bus mid-session) records as a
@@ -758,6 +802,7 @@ class RecorderController:
                                 "channel": i + 1,
                                 "jack_port": recorded_ports[i] if i < len(recorded_ports) else "",
                                 "usb_port": usb_ports[i] if i < len(usb_ports) else "",
+                                "serial": serials[i] if i < len(serials) else "",
                             })
                     if silent_channels:
                         log.warning(
@@ -780,6 +825,7 @@ class RecorderController:
                     "channels": len(recorded_ports),
                     "jack_ports": recorded_ports,
                     "usb_ports": usb_ports,
+                    "serials": serials,
                     "channel_peaks": peaks,
                     "silent_channels": silent_channels,
                     "bit_depth": cfg("BIT_DEPTH", "16"),
@@ -870,22 +916,27 @@ class RecorderController:
         recording_ports = get_active_ports()
         recording_ports_set = set(recording_ports)
 
-        # Map each live capture port to its stable USB port token for display
+        # Map each live capture port to its USB serial (device identity) and
+        # port token (hub socket) for display.
         usb_lookup = {} if MOCK_MODE else _usb_ports_by_cardid()
+        ser_lookup = {} if MOCK_MODE else _usb_serials_by_cardid()
 
-        # All JACK capture ports visible right now, ordered by hub socket so the
-        # UI rows and channel numbers follow the physical USB port order.
-        available_capture = sort_ports_by_usb(
+        # All JACK capture ports visible right now, ordered by USB serial so the
+        # UI rows and channel numbers follow per-device identity.
+        available_capture = sort_ports_for_channels(
             [p for p in active_ports if "capture" in p.lower()]
         )
         if MOCK_MODE and not available_capture:
             available_capture = recording_ports
 
         usb_by_jack: dict[str, str] = {}
+        serial_by_jack: dict[str, str] = {}
         for jp in available_capture:
             client = jp.split(":", 1)[0]
             if client in usb_lookup:
                 usb_by_jack[jp] = usb_lookup[client]
+            if client in ser_lookup:
+                serial_by_jack[jp] = ser_lookup[client]
 
         # Mic list derived from live ports (no dependency on config MIC_PORTS)
         mics: list[dict[str, Any]] = []
@@ -894,6 +945,7 @@ class RecorderController:
             mics.append({
                 "index": i,
                 "usb_port": usb_by_jack.get(jack_port, ""),
+                "serial": serial_by_jack.get(jack_port, ""),
                 "jack_port": jack_port,
                 "present": True,
                 "recording": jack_port in recording_ports_set,
@@ -921,6 +973,7 @@ class RecorderController:
             "recording_ports": recording_ports,
             "available_capture_ports": available_capture,
             "usb_by_jack": usb_by_jack,
+            "serial_by_jack": serial_by_jack,
         }
 
 
