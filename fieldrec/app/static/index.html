@@ -482,6 +482,39 @@
     transition: opacity 80ms ease-out;
   }
   #sync-flash.flash-on { opacity: 1; transition: none; }
+
+  /* ── System power (danger zone) ──────────────────────────────────────────── */
+  #danger-zone { border-color: #5a2020; background: #181111; }
+  .danger-title {
+    font-size: 0.74rem; color: #c07070; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 10px;
+  }
+  .danger-row { display: flex; gap: 8px; }
+  .danger-btn {
+    flex: 1;
+    background: #351515; color: #e59090;
+    border: 1px solid #6a2525; border-radius: var(--btn-radius);
+    padding: 12px 10px; font-size: 0.92rem; font-weight: 700;
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation; transition: transform 0.08s, background 0.15s;
+  }
+  .danger-btn:active:not(:disabled) { transform: scale(0.97); }
+  .danger-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .warn-btn {
+    flex: 1;
+    background: #2a2000; color: #e0b060;
+    border: 1px solid #6a5200; border-radius: var(--btn-radius);
+    padding: 12px 10px; font-size: 0.92rem; font-weight: 700;
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation; transition: transform 0.08s, background 0.15s;
+  }
+  .warn-btn:active:not(:disabled) { transform: scale(0.97); }
+  .warn-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+  #power-confirm { display: none; margin-top: 12px; padding-top: 12px; border-top: 1px solid #3a2020; }
+  #power-confirm-label { font-size: 0.86rem; color: #d2a2a2; margin-bottom: 8px; }
+  #power-confirm-label strong { color: #ff8a8a; letter-spacing: 0.08em; }
+  #power-confirm-input { text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700; }
+  #power-status { margin-top: 8px; font-size: 0.82rem; color: var(--amber); min-height: 1em; }
 </style>
 </head>
 <body>
@@ -571,6 +604,29 @@
 <div id="rec-section">
   <h2>Recordings</h2>
   <div id="rec-list"><div id="no-recs">Loading&hellip;</div></div>
+</div>
+
+<!-- System power (danger zone) — kept last so it's out of the way -->
+<div id="danger-zone" class="card">
+  <div class="danger-title">&#9888; System</div>
+  <div class="danger-row" style="margin-bottom:8px">
+    <button class="warn-btn" onclick="restartServices()">&#10227; Restart audio &amp; backend</button>
+  </div>
+  <div class="danger-row">
+    <button class="danger-btn" onclick="armPower('reboot')">&#10227; Reboot Pi</button>
+    <button class="danger-btn" onclick="armPower('shutdown')">&#9211; Shutdown Pi</button>
+  </div>
+  <div id="power-confirm">
+    <div id="power-confirm-label"></div>
+    <input type="text" id="power-confirm-input" autocomplete="off"
+           autocapitalize="characters" autocorrect="off" spellcheck="false"
+           oninput="powerInput()">
+    <div class="danger-row" style="margin-top:8px">
+      <button class="btn-sm" onclick="cancelPower()">Cancel</button>
+      <button class="btn-sm danger-btn" id="power-go" disabled onclick="doPower()">Confirm</button>
+    </div>
+    <div id="power-status"></div>
+  </div>
 </div>
 
 <div id="footer">pi time: —</div>
@@ -1235,6 +1291,80 @@
         else { r.json().then(b => showError(b.detail||"Delete failed")).catch(()=>{}); btn.disabled=false; btn.textContent="Delete"; }
       })
       .catch(e => { showError("Network: "+e); btn.disabled=false; btn.textContent="Delete"; });
+  };
+
+  // ── System power / restart ──────────────────────────────────────────────────
+  let _powerAction = null;  // 'reboot' | 'shutdown'
+
+  window.armPower = function (action) {
+    _powerAction = action;
+    const word = action === "reboot" ? "REBOOT" : "SHUTDOWN";
+    document.getElementById("power-confirm-label").innerHTML =
+      `Type <strong>${word}</strong> to ${action === "reboot" ? "reboot" : "shut down"} the Pi:`;
+    const inp = document.getElementById("power-confirm-input");
+    inp.value = ""; inp.placeholder = word;
+    const go = document.getElementById("power-go");
+    go.disabled = true;
+    go.textContent = action === "reboot" ? "Reboot now" : "Shutdown now";
+    document.getElementById("power-status").textContent = "";
+    document.getElementById("power-confirm").style.display = "block";
+    inp.focus();
+  };
+
+  window.powerInput = function () {
+    if (!_powerAction) return;
+    const word = _powerAction === "reboot" ? "REBOOT" : "SHUTDOWN";
+    const val = document.getElementById("power-confirm-input").value.trim().toUpperCase();
+    document.getElementById("power-go").disabled = (val !== word);
+  };
+
+  window.cancelPower = function () {
+    _powerAction = null;
+    document.getElementById("power-confirm").style.display = "none";
+  };
+
+  window.doPower = function () {
+    if (!_powerAction) return;
+    const action = _powerAction;
+    const word = action === "reboot" ? "REBOOT" : "SHUTDOWN";
+    const go = document.getElementById("power-go");
+    go.disabled = true; go.textContent = "…";
+    fetch("/api/system/" + action, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: word }),
+    })
+    .then(r => r.json().then(b => ({ ok: r.ok, b })))
+    .then(({ ok, b }) => {
+      const st = document.getElementById("power-status");
+      if (ok) {
+        st.textContent = action === "reboot"
+          ? "Rebooting… reconnect in ~40 s."
+          : "Shutting down. Safe to unplug once the LED is off.";
+      } else {
+        st.textContent = "Failed: " + (b.detail || "error");
+        go.disabled = false; go.textContent = "Retry";
+      }
+    })
+    .catch(e => {
+      document.getElementById("power-status").textContent = "Network: " + e;
+      go.disabled = false; go.textContent = "Retry";
+    });
+  };
+
+  window.restartServices = function () {
+    if (!confirm("Restart the audio stack and backend now?\n\nAny recording in progress will be lost. The web page will reconnect automatically.")) return;
+    fetch("/api/system/restart", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: "RESTART" }),
+    })
+    .then(r => r.json().then(b => ({ ok: r.ok, b })))
+    .then(({ ok, b }) => {
+      if (!ok) showError("Restart failed: " + (b.detail || "error"));
+      // On success the server restarts; the poll loop shows the reconnect banner.
+    })
+    .catch(e => showError("Network: " + e));
   };
 
 })();

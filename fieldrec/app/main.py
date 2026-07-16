@@ -1304,6 +1304,67 @@ async def api_mics_auto_assignment() -> dict[str, Any]:
     return {"assignment": clean, "channels": len(clean)}
 
 
+# ── System power endpoints ─────────────────────────────────────────────────────
+class ConfirmReq(BaseModel):
+    confirm: str = ""
+
+
+_SYSTEM_CMDS = {
+    "reboot":   "sudo -n systemctl reboot",
+    "shutdown": "sudo -n systemctl poweroff",
+    # --no-block: systemd owns the job, so restarting fieldrec-web itself
+    # (which kills us) can't abort the restart mid-flight.
+    "restart":  "sudo -n systemctl restart --no-block audio-sync fieldrec-web",
+}
+
+
+def _system_action(action: str) -> None:
+    """Fire a power/service action without blocking the response. Requires a
+    sudoers rule letting the service user run systemctl passwordless (see
+    install.sh). Runs detached with a short delay so the HTTP 200 is sent
+    first."""
+    cmd = _SYSTEM_CMDS.get(action)
+    if not cmd:
+        return
+    log.warning("System action '%s' requested via web UI", action)
+    if MOCK_MODE:
+        return
+    try:
+        os.sync()
+    except Exception:
+        pass
+    subprocess.Popen(
+        ["sh", "-c", f"sleep 1; {cmd}"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
+@app.post("/api/system/reboot")
+async def api_system_reboot(req: ConfirmReq) -> dict[str, Any]:
+    if req.confirm.strip().upper() != "REBOOT":
+        raise HTTPException(status_code=400, detail="Type REBOOT to confirm")
+    _system_action("reboot")
+    return {"status": "rebooting" if not MOCK_MODE else "mock — would reboot"}
+
+
+@app.post("/api/system/shutdown")
+async def api_system_shutdown(req: ConfirmReq) -> dict[str, Any]:
+    if req.confirm.strip().upper() != "SHUTDOWN":
+        raise HTTPException(status_code=400, detail="Type SHUTDOWN to confirm")
+    _system_action("shutdown")
+    return {"status": "shutting down" if not MOCK_MODE else "mock — would shut down"}
+
+
+@app.post("/api/system/restart")
+async def api_system_restart(req: ConfirmReq) -> dict[str, Any]:
+    """Restart the audio stack + web backend (re-detect mics, reload state)
+    without rebooting the Pi. The mic assignment persists across the restart."""
+    if req.confirm.strip().upper() != "RESTART":
+        raise HTTPException(status_code=400, detail="Confirmation required")
+    _system_action("restart")
+    return {"status": "restarting services" if not MOCK_MODE else "mock — would restart"}
+
+
 # ── Protocol endpoints ────────────────────────────────────────────────────────
 
 @app.post("/api/protocol")
