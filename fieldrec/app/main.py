@@ -460,9 +460,108 @@ def default_mic_ports() -> list[str]:
     return sort_ports_for_channels(mics)
 
 
+def _live_mic_ports() -> list[str]:
+    return [
+        p for p in cached_jack_lsp()
+        if "capture" in p.lower() and _MIC_NAME_RE.match(p.split(":", 1)[0])
+    ]
+
+
+def _socket_of(port: str, usb: dict[str, str]) -> str:
+    """Stable per-mic key for a JACK port: its USB hub-socket token (e.g.
+    "3-1.1"). In mock mode there is no USB info, so fall back to the JACK
+    client name so the feature is still testable."""
+    client = port.split(":", 1)[0]
+    tok = usb.get(client)
+    if tok:
+        return tok
+    return client if MOCK_MODE else ""
+
+
+# ── Persistent socket→channel assignment ──────────────────────────────────────
+# All XIAO mics share one USB identity, so the physical hub socket is the only
+# stable per-mic key. The user maps socket → 1-based channel in the web UI; the
+# map is persisted so it survives reboots and re-enumeration.
+_ASSIGN_PATH = os.environ.get("FIELDREC_ASSIGN") or os.path.expanduser(
+    "~/.fieldrec/mic_assignment.json"
+)
+_assign: dict[str, int] = {}
+_assign_lock = threading.Lock()
+
+
+def _load_assignment() -> None:
+    global _assign
+    try:
+        with open(_ASSIGN_PATH) as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return
+    except Exception as exc:
+        log.warning("Could not load mic assignment: %s", exc)
+        return
+    if isinstance(data, dict):
+        clean = {}
+        for k, v in data.items():
+            try:
+                ch = int(v)
+            except (TypeError, ValueError):
+                continue
+            if ch > 0:
+                clean[str(k)] = ch
+        with _assign_lock:
+            _assign = clean
+        log.info("Loaded mic assignment: %s", clean)
+
+
+def _save_assignment() -> None:
+    with _assign_lock:
+        data = dict(_assign)
+    try:
+        os.makedirs(os.path.dirname(_ASSIGN_PATH), exist_ok=True)
+        with open(_ASSIGN_PATH, "w") as fh:
+            json.dump(data, fh, indent=2)
+    except Exception as exc:
+        log.warning("Could not save mic assignment: %s", exc)
+
+
+def get_assignment() -> dict[str, int]:
+    with _assign_lock:
+        return dict(_assign)
+
+
+def set_assignment(mapping: dict[str, int]) -> dict[str, int]:
+    clean: dict[str, int] = {}
+    for k, v in mapping.items():
+        try:
+            ch = int(v)
+        except (TypeError, ValueError):
+            continue
+        if ch > 0 and str(k):
+            clean[str(k)] = ch
+    with _assign_lock:
+        _assign.clear()
+        _assign.update(clean)
+    _save_assignment()
+    log.info("Mic assignment set: %s", clean)
+    return clean
+
+
 def get_active_ports() -> list[str]:
-    """Return the active recording port list. Falls back to the auto-detected
-    mic default (all live Mic* capture ports, ordered by hub socket)."""
+    """Return the active recording port list, most specific first:
+      1. persisted socket→channel assignment (present assigned mics, by channel)
+      2. legacy explicit port selection
+      3. auto default (all live mics, ordered by serial/socket)."""
+    assign = get_assignment()
+    if assign:
+        usb = {} if MOCK_MODE else _usb_ports_by_cardid()
+        chosen: list[tuple[int, tuple, str]] = []
+        for p in _live_mic_ports():
+            ch = assign.get(_socket_of(p, usb))
+            if ch:
+                chosen.append((ch, _natural_key(_socket_of(p, usb) or p), p))
+        if chosen:
+            chosen.sort(key=lambda t: (t[0], t[1]))
+            return [p for _, _, p in chosen]
     with _mic_selection_lock:
         sel = _mic_selection["ports"]
         if sel:
@@ -929,23 +1028,35 @@ class RecorderController:
         if MOCK_MODE and not available_capture:
             available_capture = recording_ports
 
+        # Persisted socket→channel assignment (the interactive mapping)
+        assign = get_assignment()
+
         usb_by_jack: dict[str, str] = {}
         serial_by_jack: dict[str, str] = {}
+        socket_by_jack: dict[str, str] = {}
+        assigned_by_jack: dict[str, int] = {}
         for jp in available_capture:
             client = jp.split(":", 1)[0]
             if client in usb_lookup:
                 usb_by_jack[jp] = usb_lookup[client]
             if client in ser_lookup:
                 serial_by_jack[jp] = ser_lookup[client]
+            sock = _socket_of(jp, usb_lookup)
+            socket_by_jack[jp] = sock
+            if sock in assign:
+                assigned_by_jack[jp] = assign[sock]
 
         # Mic list derived from live ports (no dependency on config MIC_PORTS)
         mics: list[dict[str, Any]] = []
         for i, jack_port in enumerate(available_capture, 1):
             ch = (recording_ports.index(jack_port) + 1) if jack_port in recording_ports_set else None
+            socket = _socket_of(jack_port, usb_lookup)
             mics.append({
                 "index": i,
                 "usb_port": usb_by_jack.get(jack_port, ""),
                 "serial": serial_by_jack.get(jack_port, ""),
+                "socket": socket,
+                "assigned_channel": assign.get(socket),
                 "jack_port": jack_port,
                 "present": True,
                 "recording": jack_port in recording_ports_set,
@@ -974,10 +1085,14 @@ class RecorderController:
             "available_capture_ports": available_capture,
             "usb_by_jack": usb_by_jack,
             "serial_by_jack": serial_by_jack,
+            "socket_by_jack": socket_by_jack,
+            "assigned_by_jack": assigned_by_jack,
+            "assignment": assign,
         }
 
 
 # ── Singleton controller ───────────────────────────────────────────────────────
+_load_assignment()
 controller = RecorderController()
 
 
@@ -1147,6 +1262,46 @@ async def api_mics_reset() -> dict[str, Any]:
     default = default_mic_ports()
     log.info("Mic selection reset to auto default: %s", default)
     return {"selected": default, "channels": len(default)}
+
+
+class MicAssignReq(BaseModel):
+    # Map of USB hub-socket token (e.g. "3-1.1") → 1-based channel number.
+    assignment: dict[str, int]
+
+
+@app.get("/api/mics/assignment")
+async def api_mics_get_assignment() -> dict[str, Any]:
+    return {"assignment": get_assignment()}
+
+
+@app.post("/api/mics/assignment")
+async def api_mics_set_assignment(req: MicAssignReq) -> dict[str, Any]:
+    """Persist the socket→channel map. Channels ≤ 0 unassign a socket."""
+    clean = set_assignment(req.assignment)
+    return {"assignment": clean, "channels": len(clean)}
+
+
+@app.delete("/api/mics/assignment")
+async def api_mics_clear_assignment() -> dict[str, Any]:
+    """Clear the assignment; recording falls back to auto socket order."""
+    set_assignment({})
+    return {"assignment": {}}
+
+
+@app.post("/api/mics/assignment/auto")
+async def api_mics_auto_assignment() -> dict[str, Any]:
+    """Auto-assign channels 1..N to the currently present mics in socket order."""
+    usb = {} if MOCK_MODE else _usb_ports_by_cardid()
+    ordered = sort_ports_for_channels(_live_mic_ports())
+    mapping: dict[str, int] = {}
+    ch = 1
+    for p in ordered:
+        sock = _socket_of(p, usb)
+        if sock and sock not in mapping:
+            mapping[sock] = ch
+            ch += 1
+    clean = set_assignment(mapping)
+    return {"assignment": clean, "channels": len(clean)}
 
 
 # ── Protocol endpoints ────────────────────────────────────────────────────────
