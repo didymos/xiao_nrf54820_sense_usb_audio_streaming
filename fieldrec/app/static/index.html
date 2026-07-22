@@ -277,12 +277,28 @@
     border-radius: 8px;
     margin-bottom: 7px;
     transition: border-color 0.15s, background 0.15s;
-    cursor: pointer;
     -webkit-tap-highlight-color: transparent;
     touch-action: manipulation;
   }
   .mic-row:last-child { margin-bottom: 0; }
   .mic-row.mic-selected { border-color: #2a5a2a; background: #161e16; }
+  .mic-ch-select {
+    flex-shrink: 0;
+    min-width: 62px;
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 6px;
+    font-size: 0.82rem;
+    font-weight: 700;
+    cursor: pointer;
+    outline: none;
+  }
+  .mic-row.mic-selected .mic-ch-select {
+    border-color: #2a5a2a; color: var(--green);
+  }
+  .mic-ch-select:disabled { opacity: 0.4; cursor: not-allowed; }
   .mic-row-check {
     width: 18px; height: 18px;
     cursor: pointer;
@@ -466,6 +482,39 @@
     transition: opacity 80ms ease-out;
   }
   #sync-flash.flash-on { opacity: 1; transition: none; }
+
+  /* ── System power (danger zone) ──────────────────────────────────────────── */
+  #danger-zone { border-color: #5a2020; background: #181111; }
+  .danger-title {
+    font-size: 0.74rem; color: #c07070; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 10px;
+  }
+  .danger-row { display: flex; gap: 8px; }
+  .danger-btn {
+    flex: 1;
+    background: #351515; color: #e59090;
+    border: 1px solid #6a2525; border-radius: var(--btn-radius);
+    padding: 12px 10px; font-size: 0.92rem; font-weight: 700;
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation; transition: transform 0.08s, background 0.15s;
+  }
+  .danger-btn:active:not(:disabled) { transform: scale(0.97); }
+  .danger-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .warn-btn {
+    flex: 1;
+    background: #2a2000; color: #e0b060;
+    border: 1px solid #6a5200; border-radius: var(--btn-radius);
+    padding: 12px 10px; font-size: 0.92rem; font-weight: 700;
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation; transition: transform 0.08s, background 0.15s;
+  }
+  .warn-btn:active:not(:disabled) { transform: scale(0.97); }
+  .warn-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+  #power-confirm { display: none; margin-top: 12px; padding-top: 12px; border-top: 1px solid #3a2020; }
+  #power-confirm-label { font-size: 0.86rem; color: #d2a2a2; margin-bottom: 8px; }
+  #power-confirm-label strong { color: #ff8a8a; letter-spacing: 0.08em; }
+  #power-confirm-input { text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700; }
+  #power-status { margin-top: 8px; font-size: 0.82rem; color: var(--amber); min-height: 1em; }
 </style>
 </head>
 <body>
@@ -527,8 +576,8 @@
     </div>
     <div style="display:flex;gap:6px">
       <button class="btn-sm" id="mics-refresh-btn" onclick="refreshMics()" title="Rescan inputs">&#8635; Refresh</button>
-      <button class="btn-sm" id="mics-all-btn" onclick="micToggleAll()" style="display:none">All</button>
-      <button class="btn-sm btn-dl" id="mics-apply-btn" onclick="applyMicSelection()" disabled style="display:none">Apply</button>
+      <button class="btn-sm" id="mics-auto-btn" onclick="micAuto()" title="Assign channels 1..N by socket order" style="display:none">Auto</button>
+      <button class="btn-sm btn-del" id="mics-clear-btn" onclick="micClear()" title="Clear assignment" style="display:none">Clear</button>
     </div>
   </div>
   <div id="mic-list"><div id="mic-empty">Waiting for JACK&hellip;</div></div>
@@ -555,6 +604,29 @@
 <div id="rec-section">
   <h2>Recordings</h2>
   <div id="rec-list"><div id="no-recs">Loading&hellip;</div></div>
+</div>
+
+<!-- System power (danger zone) — kept last so it's out of the way -->
+<div id="danger-zone" class="card">
+  <div class="danger-title">&#9888; System</div>
+  <div class="danger-row" style="margin-bottom:8px">
+    <button class="warn-btn" onclick="restartServices()">&#10227; Restart audio &amp; backend</button>
+  </div>
+  <div class="danger-row">
+    <button class="danger-btn" onclick="armPower('reboot')">&#10227; Reboot Pi</button>
+    <button class="danger-btn" onclick="armPower('shutdown')">&#9211; Shutdown Pi</button>
+  </div>
+  <div id="power-confirm">
+    <div id="power-confirm-label"></div>
+    <input type="text" id="power-confirm-input" autocomplete="off"
+           autocapitalize="characters" autocorrect="off" spellcheck="false"
+           oninput="powerInput()">
+    <div class="danger-row" style="margin-top:8px">
+      <button class="btn-sm" onclick="cancelPower()">Cancel</button>
+      <button class="btn-sm danger-btn" id="power-go" disabled onclick="doPower()">Confirm</button>
+    </div>
+    <div id="power-status"></div>
+  </div>
 </div>
 
 <div id="footer">pi time: —</div>
@@ -747,7 +819,10 @@
     updateMicSelection(
       d.available_capture_ports || [],
       d.recording_ports         || [],
-      d.usb_by_jack             || {}
+      d.usb_by_jack             || {},
+      d.serial_by_jack          || {},
+      d.socket_by_jack          || {},
+      d.assigned_by_jack        || {}
     );
 
     if (prevState !== "IDLE" && lastState === "IDLE") {
@@ -807,56 +882,74 @@
     }
   }
 
-  // ── Mic selection ──────────────────────────────────────────────────────────
-  function updateMicSelection(available, recording, usbByJack) {
-    serverAvailable      = available.slice();
-    serverRecordingPorts = recording.slice();
+  // ── Mic → channel assignment ────────────────────────────────────────────────
+  // Each mic (identified by its stable USB hub socket) gets a channel via a
+  // per-row dropdown. The socket→channel map is persisted server-side. No
+  // assignment → recording falls back to automatic socket order.
+  let _micSig = "";  // re-render guard: only rebuild rows when inputs/assign change
 
-    const listEl  = document.getElementById("mic-list");
-    const allBtn  = document.getElementById("mics-all-btn");
-    const applyBtn = document.getElementById("mics-apply-btn");
+  function updateMicSelection(available, recording, usbByJack, serialByJack, socketByJack, assignedByJack) {
+    serverAvailable = available.slice();
+    socketByJack   = socketByJack   || {};
+    assignedByJack = assignedByJack || {};
+
+    const listEl   = document.getElementById("mic-list");
+    const autoBtn  = document.getElementById("mics-auto-btn");
+    const clearBtn = document.getElementById("mics-clear-btn");
 
     if (available.length === 0) {
       listEl.innerHTML = '<div id="mic-empty">Waiting for JACK&hellip;</div>';
-      allBtn.style.display  = "none";
-      applyBtn.style.display = "none";
+      autoBtn.style.display  = "none";
+      clearBtn.style.display = "none";
       document.getElementById("ch-count").textContent = "";
+      _micSig = "";
       return;
     }
+    autoBtn.style.display  = "";
+    clearBtn.style.display = "";
 
-    allBtn.style.display  = "";
-    applyBtn.style.display = "";
-
-    // Only re-render if not dirty (to preserve user's pending changes)
-    if (!micDirty) {
-      renderMicList(available, recording, usbByJack);
+    // Rebuild rows only when the ports or their assigned channels actually
+    // change — otherwise a poll would clobber an open dropdown.
+    const sig = available.map(p => p + "=" + (assignedByJack[p] || 0)).join("|");
+    if (sig !== _micSig) {
+      _micSig = sig;
+      renderMicList(available, usbByJack || {}, serialByJack || {}, socketByJack, assignedByJack);
     } else {
-      // Just refresh presence dots without resetting checkboxes
       available.forEach(port => {
         const dot = document.getElementById("micdot-" + esc(port));
         if (dot) dot.classList.add("ok");
       });
-      refreshChBadges();
     }
+    const n = available.filter(p => assignedByJack[p]).length;
+    document.getElementById("ch-count").textContent =
+      n > 0 ? `(${n} assigned)` : "(none → auto by socket)";
   }
 
-  function renderMicList(available, recording, usbByJack) {
+  function renderMicList(available, usbByJack, serialByJack, socketByJack, assignedByJack) {
     const listEl = document.getElementById("mic-list");
+    const maxCh = Math.max(available.length,
+      ...Object.values(assignedByJack).map(Number).filter(x => x > 0), 0);
     listEl.innerHTML = available.map(port => {
-      const sel  = recording.includes(port);
-      const usb  = usbByJack[port] || "";
-      const name = port.split(":")[0];
-      // The USB port token (hub socket) is the stable identifier — lead with it.
-      // The card-id name (Mic/Mic_1) can shuffle across reboots, so show it small.
-      const primary   = usb ? `USB ${esc(usb)}` : esc(name);
-      const secondary = usb ? esc(name) : "";
+      const usb      = usbByJack[port] || "";
+      const serial   = serialByJack[port] || "";
+      const socket   = socketByJack[port] || "";
+      const name     = port.split(":")[0];
+      const assigned = assignedByJack[port] || 0;
+      // Lead with serial (device identity) if present, else the USB socket.
+      const primary   = serial ? esc(serial) : (usb ? `USB ${esc(usb)}` : esc(name));
+      const secondary = [ (serial && usb) ? `USB ${esc(usb)}` : "", esc(name) ]
+                        .filter(Boolean).join(" &middot; ");
+      let opts = `<option value="0"${assigned === 0 ? " selected" : ""}>&mdash;</option>`;
+      for (let c = 1; c <= maxCh; c++) {
+        opts += `<option value="${c}"${assigned === c ? " selected" : ""}>CH${c}</option>`;
+      }
+      const noSock = socket ? "" : " disabled title='no stable socket id'";
       return `
-<div class="mic-row${sel ? ' mic-selected' : ''}" id="microw-${esc(port)}"
-     onclick="micRowClick('${esc(port)}')">
-  <input type="checkbox" class="mic-row-check" id="micchk-${esc(port)}"
-         ${sel ? "checked" : ""} onclick="event.stopPropagation()"
-         onchange="onMicChange('${esc(port)}')">
-  <span class="ch-badge ch-empty" id="micch-${esc(port)}">CH1</span>
+<div class="mic-row${assigned ? ' mic-selected' : ''}" id="microw-${esc(port)}">
+  <select class="mic-ch-select" data-socket="${esc(socket)}" data-port="${esc(port)}"
+          data-prev="${assigned}" onchange="onChannelChange(this)"${noSock}>
+    ${opts}
+  </select>
   <span class="mic-status-dot ok" id="micdot-${esc(port)}"></span>
   <div class="mic-info">
     <div class="mic-jack-name">${primary}</div>
@@ -864,97 +957,69 @@
   </div>
 </div>`;
     }).join("");
-
-    refreshChBadges();
-    micDirty = false;
-    document.getElementById("mics-apply-btn").disabled = true;
   }
 
-  function micRowClick(port) {
-    const chk = document.getElementById("micchk-" + port);
-    if (!chk) return;
-    chk.checked = !chk.checked;
-    onMicChange(port);
-  }
-
-  function onMicChange(port) {
-    const chk = document.getElementById("micchk-" + port);
-    const row = document.getElementById("microw-" + port);
-    if (chk && row) row.classList.toggle("mic-selected", chk.checked);
-    refreshChBadges();
-    micDirty = localSelected().join(",") !== serverRecordingPorts.join(",");
-    document.getElementById("mics-apply-btn").disabled = !micDirty;
-  }
-
-  function refreshChBadges() {
-    let ch = 1;
-    document.querySelectorAll(".mic-row-check").forEach(chk => {
-      const port  = chk.id.replace("micchk-", "");
-      const badge = document.getElementById("micch-" + port);
-      if (!badge) return;
-      if (chk.checked) {
-        badge.textContent = "CH" + ch++;
-        badge.classList.remove("ch-empty");
-      } else {
-        badge.textContent = "CH1";
-        badge.classList.add("ch-empty");
-      }
+  // Set a mic's channel. Channels are unique: picking a channel another mic
+  // already holds swaps that mic to this one's previous channel.
+  window.onChannelChange = function (changed) {
+    const selects = [...document.querySelectorAll(".mic-ch-select")];
+    const newCh = parseInt(changed.value, 10) || 0;
+    const prev  = parseInt(changed.getAttribute("data-prev"), 10) || 0;
+    if (newCh > 0) {
+      selects.forEach(s => {
+        if (s !== changed && (parseInt(s.value, 10) || 0) === newCh) {
+          s.value = String(prev);
+          s.setAttribute("data-prev", String(prev));
+        }
+      });
+    }
+    changed.setAttribute("data-prev", String(newCh));
+    // Reflect highlight + count immediately
+    selects.forEach(s => {
+      const row = document.getElementById("microw-" + s.getAttribute("data-port"));
+      if (row) row.classList.toggle("mic-selected", (parseInt(s.value, 10) || 0) > 0);
     });
-    const n = document.querySelectorAll(".mic-row-check:checked").length;
-    document.getElementById("ch-count").textContent = n > 0 ? `(${n})` : "";
-  }
+    const map = {};
+    selects.forEach(s => {
+      const sock = s.getAttribute("data-socket");
+      const ch = parseInt(s.value, 10) || 0;
+      if (sock && ch > 0) map[sock] = ch;
+    });
+    _micSig = "";  // let the next poll re-render from server truth
+    fetch("/api/mics/assignment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ assignment: map }),
+    })
+    .then(r => { if (!r.ok) r.json().then(b => showError("Assign failed: " + (b.detail || "error"))).catch(()=>{}); })
+    .catch(e => showError("Network: " + e));
+  };
 
-  function localSelected() {
-    return [...document.querySelectorAll(".mic-row-check")]
-      .filter(c => c.checked)
-      .map(c => c.id.replace("micchk-", ""));
-  }
+  window.micAuto = function () {
+    const btn = document.getElementById("mics-auto-btn");
+    btn.disabled = true;
+    fetch("/api/mics/assignment/auto", { method: "POST" })
+      .then(() => { _micSig = ""; poll(); })
+      .catch(e => showError("Network: " + e))
+      .finally(() => { btn.disabled = false; });
+  };
 
-  // Force a re-scan of inputs: discard pending local changes and re-render
-  // from a fresh server poll (audio-sync brings inputs in/out live).
+  window.micClear = function () {
+    if (!confirm("Clear channel assignment?\nRecording will fall back to automatic socket order.")) return;
+    fetch("/api/mics/assignment", { method: "DELETE" })
+      .then(() => { _micSig = ""; poll(); })
+      .catch(e => showError("Network: " + e));
+  };
+
+  // Force a re-scan of inputs from a fresh server poll.
   window.refreshMics = function () {
     const btn = document.getElementById("mics-refresh-btn");
-    micDirty = false;
-    document.getElementById("mics-apply-btn").disabled = true;
     const prev = btn.innerHTML;
     btn.disabled = true;
     btn.innerHTML = "&#8635; …";
+    _micSig = "";
     poll();
     setTimeout(() => { btn.disabled = false; btn.innerHTML = prev; }, 500);
-  };
-
-  window.micToggleAll = function () {
-    const checks = [...document.querySelectorAll(".mic-row-check")];
-    const allOn  = checks.every(c => c.checked);
-    checks.forEach(c => {
-      c.checked = !allOn;
-      const port = c.id.replace("micchk-", "");
-      const row  = document.getElementById("microw-" + port);
-      if (row) row.classList.toggle("mic-selected", !allOn);
-    });
-    refreshChBadges();
-    micDirty = localSelected().join(",") !== serverRecordingPorts.join(",");
-    document.getElementById("mics-apply-btn").disabled = !micDirty;
-  };
-
-  window.applyMicSelection = function () {
-    const ports = localSelected();
-    if (ports.length === 0) { showError("Select at least one channel."); return; }
-    const btn = document.getElementById("mics-apply-btn");
-    btn.disabled = true;
-    btn.textContent = "…";
-    fetch("/api/mics/select", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ports }),
-    })
-    .then(r => r.json().then(b => ({ ok: r.ok, b })))
-    .then(({ ok, b }) => {
-      btn.textContent = "Apply";
-      if (ok) { serverRecordingPorts = b.selected; micDirty = false; }
-      else { showError("Mic select failed: " + (b.detail || "error")); btn.disabled = false; }
-    })
-    .catch(e => { showError("Network: " + e); btn.textContent = "Apply"; btn.disabled = false; });
   };
 
   // ── Disk ───────────────────────────────────────────────────────────────────
@@ -1160,7 +1225,10 @@
   function silentInfo(sidecar) {
     const sc = sidecar && sidecar.silent_channels;
     if (!sc || !sc.length) return null;
-    const labels = sc.map(c => "CH" + c.channel + (c.usb_port ? ` (${c.usb_port})` : ""));
+    const labels = sc.map(c => {
+      const id = c.serial || c.usb_port || "";
+      return "CH" + c.channel + (id ? ` (${id})` : "");
+    });
     return { count: sc.length, labels };
   }
   function silentWarnLine(sidecar) {
@@ -1223,6 +1291,80 @@
         else { r.json().then(b => showError(b.detail||"Delete failed")).catch(()=>{}); btn.disabled=false; btn.textContent="Delete"; }
       })
       .catch(e => { showError("Network: "+e); btn.disabled=false; btn.textContent="Delete"; });
+  };
+
+  // ── System power / restart ──────────────────────────────────────────────────
+  let _powerAction = null;  // 'reboot' | 'shutdown'
+
+  window.armPower = function (action) {
+    _powerAction = action;
+    const word = action === "reboot" ? "REBOOT" : "SHUTDOWN";
+    document.getElementById("power-confirm-label").innerHTML =
+      `Type <strong>${word}</strong> to ${action === "reboot" ? "reboot" : "shut down"} the Pi:`;
+    const inp = document.getElementById("power-confirm-input");
+    inp.value = ""; inp.placeholder = word;
+    const go = document.getElementById("power-go");
+    go.disabled = true;
+    go.textContent = action === "reboot" ? "Reboot now" : "Shutdown now";
+    document.getElementById("power-status").textContent = "";
+    document.getElementById("power-confirm").style.display = "block";
+    inp.focus();
+  };
+
+  window.powerInput = function () {
+    if (!_powerAction) return;
+    const word = _powerAction === "reboot" ? "REBOOT" : "SHUTDOWN";
+    const val = document.getElementById("power-confirm-input").value.trim().toUpperCase();
+    document.getElementById("power-go").disabled = (val !== word);
+  };
+
+  window.cancelPower = function () {
+    _powerAction = null;
+    document.getElementById("power-confirm").style.display = "none";
+  };
+
+  window.doPower = function () {
+    if (!_powerAction) return;
+    const action = _powerAction;
+    const word = action === "reboot" ? "REBOOT" : "SHUTDOWN";
+    const go = document.getElementById("power-go");
+    go.disabled = true; go.textContent = "…";
+    fetch("/api/system/" + action, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: word }),
+    })
+    .then(r => r.json().then(b => ({ ok: r.ok, b })))
+    .then(({ ok, b }) => {
+      const st = document.getElementById("power-status");
+      if (ok) {
+        st.textContent = action === "reboot"
+          ? "Rebooting… reconnect in ~40 s."
+          : "Shutting down. Safe to unplug once the LED is off.";
+      } else {
+        st.textContent = "Failed: " + (b.detail || "error");
+        go.disabled = false; go.textContent = "Retry";
+      }
+    })
+    .catch(e => {
+      document.getElementById("power-status").textContent = "Network: " + e;
+      go.disabled = false; go.textContent = "Retry";
+    });
+  };
+
+  window.restartServices = function () {
+    if (!confirm("Restart the audio stack and backend now?\n\nAny recording in progress will be lost. The web page will reconnect automatically.")) return;
+    fetch("/api/system/restart", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: "RESTART" }),
+    })
+    .then(r => r.json().then(b => ({ ok: r.ok, b })))
+    .then(({ ok, b }) => {
+      if (!ok) showError("Restart failed: " + (b.detail || "error"));
+      // On success the server restarts; the poll loop shows the reconnect banner.
+    })
+    .catch(e => showError("Network: " + e));
   };
 
 })();

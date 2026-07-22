@@ -371,59 +371,197 @@ def _natural_key(s: str) -> tuple[Any, ...]:
     )
 
 
+def _read_card_attr(card_dir: Path) -> tuple[str, str, str]:
+    """Return (sanitized_card_id, usb_port_token, usb_serial) for one sound card.
+    The card's `device` symlink points at the USB *interface* (…/3-1.1:1.0); the
+    USB port token is that basename's prefix, and the serial lives on the parent
+    USB *device* dir (…/3-1.1/serial). Any field may be "" if unavailable."""
+    try:
+        card_id = (card_dir / "id").read_text().strip()
+    except Exception:
+        return "", "", ""
+    safe = re.sub(r"[^A-Za-z0-9_]", "_", card_id)
+    port = serial = ""
+    try:
+        iface = os.path.realpath(str(card_dir / "device"))   # …/3-1.1/3-1.1:1.0
+        port = os.path.basename(iface).split(":", 1)[0]       # 3-1.1
+        sp = os.path.join(os.path.dirname(iface), "serial")   # …/3-1.1/serial
+        if os.path.exists(sp):
+            with open(sp) as fh:
+                serial = fh.read().strip()
+    except Exception:
+        pass
+    return safe, port, serial
+
+
 def _usb_ports_by_cardid() -> dict[str, str]:
-    """Map each ALSA card id (sanitized like the JACK client name) to its
-    stable USB port token (e.g. "3-1.1"). The port token's leaf (.1/.2/…) is
-    the physical hub socket — stable across reboots and re-enumeration."""
+    """Map each sanitized ALSA card id to its stable USB port token (e.g. "3-1.1")."""
     result: dict[str, str] = {}
     try:
         for entry in sorted(Path("/sys/class/sound").glob("card[0-9]*")):
-            try:
-                card_id = (entry / "id").read_text().strip()
-                dev = os.path.realpath(str(entry / "device"))
-                port = os.path.basename(dev).split(":", 1)[0]
-            except Exception:
-                continue
-            if card_id and port:
-                safe = re.sub(r"[^A-Za-z0-9_]", "_", card_id)
-                result[safe] = port
+            cid, port, _ = _read_card_attr(entry)
+            if cid and port:
+                result[cid] = port
     except Exception:
         pass
     return result
 
 
-def _port_sort_key(port: str, usb: dict[str, str]) -> tuple[Any, ...]:
-    """Order capture ports by their physical USB port token (hub socket), so
-    channel N is always the same physical socket regardless of which card id
-    the kernel happened to assign this boot. Ports with no USB mapping sort
-    last, by name."""
+def _usb_serials_by_cardid() -> dict[str, str]:
+    """Map each sanitized ALSA card id to its USB serial number (e.g.
+    "XIAO-MIC-003"). This is the per-physical-device identity: it stays with the
+    board no matter which hub socket it is plugged into."""
+    result: dict[str, str] = {}
+    try:
+        for entry in sorted(Path("/sys/class/sound").glob("card[0-9]*")):
+            cid, _, serial = _read_card_attr(entry)
+            if cid and serial:
+                result[cid] = serial
+    except Exception:
+        pass
+    return result
+
+
+def _channel_sort_key(
+    port: str, serials: dict[str, str], usb: dict[str, str]
+) -> tuple[Any, ...]:
+    """Channel ordering key. Primary: USB serial number (per-device identity, so
+    XIAO-MIC-001 → ch1 … regardless of socket). Fallback for a board with no
+    serial: USB hub socket, then the JACK client name. Serialed devices always
+    sort ahead of non-serialed ones so the numbered boards take the low channels."""
     client = port.split(":", 1)[0]
+    ser = serials.get(client)
+    if ser:
+        return (0,) + _natural_key(ser)
     token = usb.get(client)
     if token:
-        return (0,) + _natural_key(token)
-    return (1,) + _natural_key(port)
+        return (1,) + _natural_key(token)
+    return (2,) + _natural_key(port)
 
 
-def sort_ports_by_usb(ports: list[str]) -> list[str]:
-    """Sort JACK capture ports into stable channel order by USB hub socket."""
-    usb = {} if MOCK_MODE else _usb_ports_by_cardid()
-    return sorted(ports, key=lambda p: _port_sort_key(p, usb))
+def sort_ports_for_channels(ports: list[str]) -> list[str]:
+    """Sort JACK capture ports into stable channel order: by USB serial number,
+    falling back to hub socket then name."""
+    if MOCK_MODE:
+        serials, usb = {}, {}
+    else:
+        serials, usb = _usb_serials_by_cardid(), _usb_ports_by_cardid()
+    return sorted(ports, key=lambda p: _channel_sort_key(p, serials, usb))
 
 
 def default_mic_ports() -> list[str]:
     """Live capture ports whose JACK client is named like a mic (Mic, Mic_1, …),
-    ordered by physical USB hub socket. This is the default recording selection
-    when the user hasn't picked channels explicitly."""
+    ordered by USB serial number (per-device identity). This is the default
+    recording selection when the user hasn't picked channels explicitly."""
     mics = [
         p for p in cached_jack_lsp()
         if "capture" in p.lower() and _MIC_NAME_RE.match(p.split(":", 1)[0])
     ]
-    return sort_ports_by_usb(mics)
+    return sort_ports_for_channels(mics)
+
+
+def _live_mic_ports() -> list[str]:
+    return [
+        p for p in cached_jack_lsp()
+        if "capture" in p.lower() and _MIC_NAME_RE.match(p.split(":", 1)[0])
+    ]
+
+
+def _socket_of(port: str, usb: dict[str, str]) -> str:
+    """Stable per-mic key for a JACK port: its USB hub-socket token (e.g.
+    "3-1.1"). In mock mode there is no USB info, so fall back to the JACK
+    client name so the feature is still testable."""
+    client = port.split(":", 1)[0]
+    tok = usb.get(client)
+    if tok:
+        return tok
+    return client if MOCK_MODE else ""
+
+
+# ── Persistent socket→channel assignment ──────────────────────────────────────
+# All XIAO mics share one USB identity, so the physical hub socket is the only
+# stable per-mic key. The user maps socket → 1-based channel in the web UI; the
+# map is persisted so it survives reboots and re-enumeration.
+_ASSIGN_PATH = os.environ.get("FIELDREC_ASSIGN") or os.path.expanduser(
+    "~/.fieldrec/mic_assignment.json"
+)
+_assign: dict[str, int] = {}
+_assign_lock = threading.Lock()
+
+
+def _load_assignment() -> None:
+    global _assign
+    try:
+        with open(_ASSIGN_PATH) as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return
+    except Exception as exc:
+        log.warning("Could not load mic assignment: %s", exc)
+        return
+    if isinstance(data, dict):
+        clean = {}
+        for k, v in data.items():
+            try:
+                ch = int(v)
+            except (TypeError, ValueError):
+                continue
+            if ch > 0:
+                clean[str(k)] = ch
+        with _assign_lock:
+            _assign = clean
+        log.info("Loaded mic assignment: %s", clean)
+
+
+def _save_assignment() -> None:
+    with _assign_lock:
+        data = dict(_assign)
+    try:
+        os.makedirs(os.path.dirname(_ASSIGN_PATH), exist_ok=True)
+        with open(_ASSIGN_PATH, "w") as fh:
+            json.dump(data, fh, indent=2)
+    except Exception as exc:
+        log.warning("Could not save mic assignment: %s", exc)
+
+
+def get_assignment() -> dict[str, int]:
+    with _assign_lock:
+        return dict(_assign)
+
+
+def set_assignment(mapping: dict[str, int]) -> dict[str, int]:
+    clean: dict[str, int] = {}
+    for k, v in mapping.items():
+        try:
+            ch = int(v)
+        except (TypeError, ValueError):
+            continue
+        if ch > 0 and str(k):
+            clean[str(k)] = ch
+    with _assign_lock:
+        _assign.clear()
+        _assign.update(clean)
+    _save_assignment()
+    log.info("Mic assignment set: %s", clean)
+    return clean
 
 
 def get_active_ports() -> list[str]:
-    """Return the active recording port list. Falls back to the auto-detected
-    mic default (all live Mic* capture ports, ordered by hub socket)."""
+    """Return the active recording port list, most specific first:
+      1. persisted socket→channel assignment (present assigned mics, by channel)
+      2. legacy explicit port selection
+      3. auto default (all live mics, ordered by serial/socket)."""
+    assign = get_assignment()
+    if assign:
+        usb = {} if MOCK_MODE else _usb_ports_by_cardid()
+        chosen: list[tuple[int, tuple, str]] = []
+        for p in _live_mic_ports():
+            ch = assign.get(_socket_of(p, usb))
+            if ch:
+                chosen.append((ch, _natural_key(_socket_of(p, usb) or p), p))
+        if chosen:
+            chosen.sort(key=lambda t: (t[0], t[1]))
+            return [p for _, _, p in chosen]
     with _mic_selection_lock:
         sel = _mic_selection["ports"]
         if sel:
@@ -740,11 +878,16 @@ class RecorderController:
                 # Capture current protocol entry before advancing
                 proto = _get_protocol_snapshot()
                 recorded_ports = get_active_ports()
-                # Document the physical hub socket behind each channel so the
-                # recording is self-describing (channel N ← USB port token).
+                # Document the physical device (USB serial) and hub socket behind
+                # each channel so the recording is self-describing:
+                # channel N ← serial ← usb port.
                 usb_lookup = {} if MOCK_MODE else _usb_ports_by_cardid()
+                ser_lookup = {} if MOCK_MODE else _usb_serials_by_cardid()
                 usb_ports = [
                     usb_lookup.get(p.split(":", 1)[0], "") for p in recorded_ports
+                ]
+                serials = [
+                    ser_lookup.get(p.split(":", 1)[0], "") for p in recorded_ports
                 ]
                 # Post-record check: per-channel peak level. A dropped mic (e.g.
                 # a USB device that fell off the bus mid-session) records as a
@@ -758,6 +901,7 @@ class RecorderController:
                                 "channel": i + 1,
                                 "jack_port": recorded_ports[i] if i < len(recorded_ports) else "",
                                 "usb_port": usb_ports[i] if i < len(usb_ports) else "",
+                                "serial": serials[i] if i < len(serials) else "",
                             })
                     if silent_channels:
                         log.warning(
@@ -780,6 +924,7 @@ class RecorderController:
                     "channels": len(recorded_ports),
                     "jack_ports": recorded_ports,
                     "usb_ports": usb_ports,
+                    "serials": serials,
                     "channel_peaks": peaks,
                     "silent_channels": silent_channels,
                     "bit_depth": cfg("BIT_DEPTH", "16"),
@@ -870,30 +1015,48 @@ class RecorderController:
         recording_ports = get_active_ports()
         recording_ports_set = set(recording_ports)
 
-        # Map each live capture port to its stable USB port token for display
+        # Map each live capture port to its USB serial (device identity) and
+        # port token (hub socket) for display.
         usb_lookup = {} if MOCK_MODE else _usb_ports_by_cardid()
+        ser_lookup = {} if MOCK_MODE else _usb_serials_by_cardid()
 
-        # All JACK capture ports visible right now, ordered by hub socket so the
-        # UI rows and channel numbers follow the physical USB port order.
-        available_capture = sort_ports_by_usb(
+        # All JACK capture ports visible right now, ordered by USB serial so the
+        # UI rows and channel numbers follow per-device identity.
+        available_capture = sort_ports_for_channels(
             [p for p in active_ports if "capture" in p.lower()]
         )
         if MOCK_MODE and not available_capture:
             available_capture = recording_ports
 
+        # Persisted socket→channel assignment (the interactive mapping)
+        assign = get_assignment()
+
         usb_by_jack: dict[str, str] = {}
+        serial_by_jack: dict[str, str] = {}
+        socket_by_jack: dict[str, str] = {}
+        assigned_by_jack: dict[str, int] = {}
         for jp in available_capture:
             client = jp.split(":", 1)[0]
             if client in usb_lookup:
                 usb_by_jack[jp] = usb_lookup[client]
+            if client in ser_lookup:
+                serial_by_jack[jp] = ser_lookup[client]
+            sock = _socket_of(jp, usb_lookup)
+            socket_by_jack[jp] = sock
+            if sock in assign:
+                assigned_by_jack[jp] = assign[sock]
 
         # Mic list derived from live ports (no dependency on config MIC_PORTS)
         mics: list[dict[str, Any]] = []
         for i, jack_port in enumerate(available_capture, 1):
             ch = (recording_ports.index(jack_port) + 1) if jack_port in recording_ports_set else None
+            socket = _socket_of(jack_port, usb_lookup)
             mics.append({
                 "index": i,
                 "usb_port": usb_by_jack.get(jack_port, ""),
+                "serial": serial_by_jack.get(jack_port, ""),
+                "socket": socket,
+                "assigned_channel": assign.get(socket),
                 "jack_port": jack_port,
                 "present": True,
                 "recording": jack_port in recording_ports_set,
@@ -921,10 +1084,15 @@ class RecorderController:
             "recording_ports": recording_ports,
             "available_capture_ports": available_capture,
             "usb_by_jack": usb_by_jack,
+            "serial_by_jack": serial_by_jack,
+            "socket_by_jack": socket_by_jack,
+            "assigned_by_jack": assigned_by_jack,
+            "assignment": assign,
         }
 
 
 # ── Singleton controller ───────────────────────────────────────────────────────
+_load_assignment()
 controller = RecorderController()
 
 
@@ -1094,6 +1262,107 @@ async def api_mics_reset() -> dict[str, Any]:
     default = default_mic_ports()
     log.info("Mic selection reset to auto default: %s", default)
     return {"selected": default, "channels": len(default)}
+
+
+class MicAssignReq(BaseModel):
+    # Map of USB hub-socket token (e.g. "3-1.1") → 1-based channel number.
+    assignment: dict[str, int]
+
+
+@app.get("/api/mics/assignment")
+async def api_mics_get_assignment() -> dict[str, Any]:
+    return {"assignment": get_assignment()}
+
+
+@app.post("/api/mics/assignment")
+async def api_mics_set_assignment(req: MicAssignReq) -> dict[str, Any]:
+    """Persist the socket→channel map. Channels ≤ 0 unassign a socket."""
+    clean = set_assignment(req.assignment)
+    return {"assignment": clean, "channels": len(clean)}
+
+
+@app.delete("/api/mics/assignment")
+async def api_mics_clear_assignment() -> dict[str, Any]:
+    """Clear the assignment; recording falls back to auto socket order."""
+    set_assignment({})
+    return {"assignment": {}}
+
+
+@app.post("/api/mics/assignment/auto")
+async def api_mics_auto_assignment() -> dict[str, Any]:
+    """Auto-assign channels 1..N to the currently present mics in socket order."""
+    usb = {} if MOCK_MODE else _usb_ports_by_cardid()
+    ordered = sort_ports_for_channels(_live_mic_ports())
+    mapping: dict[str, int] = {}
+    ch = 1
+    for p in ordered:
+        sock = _socket_of(p, usb)
+        if sock and sock not in mapping:
+            mapping[sock] = ch
+            ch += 1
+    clean = set_assignment(mapping)
+    return {"assignment": clean, "channels": len(clean)}
+
+
+# ── System power endpoints ─────────────────────────────────────────────────────
+class ConfirmReq(BaseModel):
+    confirm: str = ""
+
+
+_SYSTEM_CMDS = {
+    "reboot":   "sudo -n systemctl reboot",
+    "shutdown": "sudo -n systemctl poweroff",
+    # --no-block: systemd owns the job, so restarting fieldrec-web itself
+    # (which kills us) can't abort the restart mid-flight.
+    "restart":  "sudo -n systemctl restart --no-block audio-sync fieldrec-web",
+}
+
+
+def _system_action(action: str) -> None:
+    """Fire a power/service action without blocking the response. Requires a
+    sudoers rule letting the service user run systemctl passwordless (see
+    install.sh). Runs detached with a short delay so the HTTP 200 is sent
+    first."""
+    cmd = _SYSTEM_CMDS.get(action)
+    if not cmd:
+        return
+    log.warning("System action '%s' requested via web UI", action)
+    if MOCK_MODE:
+        return
+    try:
+        os.sync()
+    except Exception:
+        pass
+    subprocess.Popen(
+        ["sh", "-c", f"sleep 1; {cmd}"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
+@app.post("/api/system/reboot")
+async def api_system_reboot(req: ConfirmReq) -> dict[str, Any]:
+    if req.confirm.strip().upper() != "REBOOT":
+        raise HTTPException(status_code=400, detail="Type REBOOT to confirm")
+    _system_action("reboot")
+    return {"status": "rebooting" if not MOCK_MODE else "mock — would reboot"}
+
+
+@app.post("/api/system/shutdown")
+async def api_system_shutdown(req: ConfirmReq) -> dict[str, Any]:
+    if req.confirm.strip().upper() != "SHUTDOWN":
+        raise HTTPException(status_code=400, detail="Type SHUTDOWN to confirm")
+    _system_action("shutdown")
+    return {"status": "shutting down" if not MOCK_MODE else "mock — would shut down"}
+
+
+@app.post("/api/system/restart")
+async def api_system_restart(req: ConfirmReq) -> dict[str, Any]:
+    """Restart the audio stack + web backend (re-detect mics, reload state)
+    without rebooting the Pi. The mic assignment persists across the restart."""
+    if req.confirm.strip().upper() != "RESTART":
+        raise HTTPException(status_code=400, detail="Confirmation required")
+    _system_action("restart")
+    return {"status": "restarting services" if not MOCK_MODE else "mock — would restart"}
 
 
 # ── Protocol endpoints ────────────────────────────────────────────────────────
