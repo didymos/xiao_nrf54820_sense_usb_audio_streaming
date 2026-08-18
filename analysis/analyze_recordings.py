@@ -182,12 +182,16 @@ def acoustic_metrics(x: np.ndarray, sr: int) -> dict:
 
 
 def quality_score(snr_db: float, speech_dbfs: float, clip_frac: float) -> float:
-    """Heuristic 0–100. Rewards SNR, penalises clipping and bad levels.
-    NOT a calibrated metric — a relative indicator for ranking channels."""
-    s = 0.0
-    s += min(max(snr_db, 0.0), 40.0) / 40.0 * 60.0          # SNR: up to 60
-    s += max(0.0, 40.0 * (1.0 - min(1.0, abs(-20.0 - speech_dbfs) / 25.0)))  # level: up to 40, peak at -20 dBFS
-    s -= clip_frac * 100.0 * 2.0                             # clipping: heavy penalty
+    """Heuristic 0–100. SNR-dominated, rewards adequate level, penalises
+    clipping. NOT a calibrated metric — a relative indicator for ranking.
+      • SNR:   up to 60 pts (linear to 40 dB)
+      • level: up to 40 pts, full from -15 dBFS, ramping to 0 at -45 dBFS
+               (a louder-but-clean channel is NOT penalised; overload is
+                caught by the clipping term)
+      • clipping: heavy penalty (2 pts per % of clipped samples)"""
+    s = min(max(snr_db, 0.0), 40.0) / 40.0 * 60.0
+    s += 40.0 * min(1.0, max(0.0, (speech_dbfs + 45.0) / 30.0))
+    s -= clip_frac * 100.0 * 2.0
     return float(min(100.0, max(0.0, s)))
 
 
@@ -450,6 +454,88 @@ def summarise(rows: list[ChannelMetrics], with_asr: bool) -> list[str]:
     return out
 
 
+def aggregate_positions(all_rows: list[tuple[str, ChannelMetrics]], with_asr: bool) -> list[dict]:
+    """Group every analysed channel (across all takes) by position/mount and
+    average the metrics — the per-position comparison over multiple recordings."""
+    from collections import defaultdict
+    groups: dict[str, list[ChannelMetrics]] = defaultdict(list)
+    for _fname, r in all_rows:
+        groups[_pos_label(r)].append(r)
+
+    def mean(rows, attr):
+        vals = [getattr(x, attr) for x in rows if getattr(x, attr) is not None]
+        return round(sum(vals) / len(vals), 2) if vals else None
+
+    out = []
+    for key, rows in groups.items():
+        takes = len({id(r) for r in rows})
+        rec = dict(
+            position=key,
+            takes=len(rows),
+            snr_db=mean(rows, "snr_db"),
+            quality_score=mean(rows, "quality_score"),
+            speech_level_dbfs=mean(rows, "speech_level_dbfs"),
+            noise_floor_dbfs=mean(rows, "noise_floor_dbfs"),
+            clip_pct_max=round(max((r.clipping_pct for r in rows), default=0.0), 2),
+        )
+        if with_asr:
+            rec.update(
+                words=mean(rows, "words"),
+                word_conf=mean(rows, "word_conf"),
+                wer_vs_best=mean(rows, "wer_vs_best"),
+            )
+        out.append(rec)
+    out.sort(key=lambda d: (d["quality_score"] or 0), reverse=True)
+    return out
+
+
+def print_aggregate(agg: list[dict], with_asr: bool) -> None:
+    if not agg:
+        return
+    print("\n=== Aggregate by position (mean over all takes) ===")
+    cols = [("position", 18), ("takes", 6), ("SNR", 7), ("score", 7),
+            ("speech", 8), ("noise", 7), ("clipmax", 8)]
+    if with_asr:
+        cols += [("words", 7), ("conf", 6), ("WER", 6)]
+    header = "".join(h.ljust(w) for h, w in cols)
+    print(header + "\n" + "-" * len(header))
+
+    def cell(v, fmt="{:.1f}"):
+        return "-" if v is None else fmt.format(v)
+
+    for d in agg:
+        row = [
+            str(d["position"])[:17].ljust(18),
+            str(d["takes"]).ljust(6),
+            cell(d["snr_db"]).ljust(7),
+            cell(d["quality_score"], "{:.0f}").ljust(7),
+            cell(d["speech_level_dbfs"], "{:.0f}").ljust(8),
+            cell(d["noise_floor_dbfs"], "{:.0f}").ljust(7),
+            cell(d["clip_pct_max"], "{:.1f}").ljust(8),
+        ]
+        if with_asr:
+            row += [
+                cell(d.get("words"), "{:.0f}").ljust(7),
+                cell(d.get("word_conf"), "{:.2f}").ljust(6),
+                cell(d.get("wer_vs_best"), "{:.2f}").ljust(6),
+            ]
+        print("".join(row))
+    best = agg[0]
+    print(f"\n→ Best position overall: {best['position']} "
+          f"(score {cell(best['quality_score'], '{:.0f}')}, SNR {cell(best['snr_db'])} dB, "
+          f"{best['takes']} take(s))")
+
+
+def write_aggregate_csv(path: str, agg: list[dict]) -> None:
+    if not agg:
+        return
+    fields = list(agg[0].keys())
+    with open(path, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=fields)
+        w.writeheader()
+        w.writerows(agg)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Analyse FieldRec recordings: quality & intelligibility per position.")
     ap.add_argument("input", help="A WAV file or a directory of WAV files")
@@ -489,9 +575,15 @@ def main() -> int:
             _plot_file(os.path.join(args.out, os.path.splitext(name)[0] + ".png"), name, rows)
 
     if all_rows:
+        agg = aggregate_positions(all_rows, args.transcribe)
+        print_aggregate(agg, args.transcribe)
+
         csv_path = os.path.join(args.out, "analysis.csv")
         write_csv(csv_path, all_rows)
+        agg_path = os.path.join(args.out, "aggregate.csv")
+        write_aggregate_csv(agg_path, agg)
         print(f"\nWrote {csv_path}  ({len(all_rows)} channel rows)")
+        print(f"Wrote {agg_path}  ({len(agg)} position groups)")
     return 0
 
 

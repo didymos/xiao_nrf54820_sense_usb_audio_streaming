@@ -47,8 +47,14 @@ python analyze_recordings.py take_001.wav --positions positions.json --transcrib
 python analyze_recordings.py ./recordings/ --positions positions.json --transcribe --plots --out results/
 ```
 
-Outputs: a console table + per-position summary, `analysis.csv` (all metrics for
-every channel/file), and — with `--plots` — an SNR/score bar chart per file.
+Outputs:
+- a per-file console table + summary,
+- an **Aggregate by position** table — each position/mount averaged over **all
+  takes**, ranked, with the best position called out (this is the multi-take
+  comparison, e.g. helmet vs. start-number),
+- `analysis.csv` (every channel of every file) and `aggregate.csv` (per-position
+  means),
+- with `--plots`, an SNR/score bar chart per file.
 
 ## What the numbers mean
 
