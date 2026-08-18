@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Analysis tool output
+analysis_out/
+analysis/results/
+analysis/positions.json
+
+# Zephyr / west build artifacts
+build/
+build_*/
+uf2-out/
+
+# OS
+.DS_Store

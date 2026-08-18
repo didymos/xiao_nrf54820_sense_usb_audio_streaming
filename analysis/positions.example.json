@@ -1,0 +1,13 @@
+{
+  "_comment": "Map each 1-based recording channel to a physical position and mounting area. Copy to positions.json and edit. 'label' is optional free text.",
+  "channels": {
+    "1": { "position": "left",  "mount": "helmet", "label": "helmet front-left" },
+    "2": { "position": "right", "mount": "helmet", "label": "helmet front-right" },
+    "3": { "position": "left",  "mount": "collar", "label": "collar left" },
+    "4": { "position": "right", "mount": "collar", "label": "collar right" },
+    "5": { "position": "left",  "mount": "chest" },
+    "6": { "position": "right", "mount": "chest" },
+    "7": { "position": "center", "mount": "helmet" },
+    "8": { "position": "rear",   "mount": "helmet" }
+  }
+}

@@ -222,12 +222,17 @@ sed \
     > /etc/systemd/system/fieldrec-web.service
 log_ok "fieldrec-web.service installed"
 
-# ── Step 14: Sudoers rule for date ───────────────────────────────────────────
-log_section "Step 14: Sudoers rule for date command"
+# ── Step 14: Sudoers rules (set clock + power/restart from web UI) ────────────
+log_section "Step 14: Sudoers rules"
+SYSTEMCTL="$(command -v systemctl || echo /usr/bin/systemctl)"
 SUDOERS_FILE="/etc/sudoers.d/fieldrec-date"
 cat > "$SUDOERS_FILE" <<SUDEOF
-# Allow fieldrec web service to set system clock
+# Allow fieldrec web service to set the system clock
 ${TARGET_USER} ALL=(root) NOPASSWD: /usr/bin/date
+# Allow the web UI's System panel to reboot / shut down / restart services
+${TARGET_USER} ALL=(root) NOPASSWD: ${SYSTEMCTL} reboot
+${TARGET_USER} ALL=(root) NOPASSWD: ${SYSTEMCTL} poweroff
+${TARGET_USER} ALL=(root) NOPASSWD: ${SYSTEMCTL} restart --no-block audio-sync fieldrec-web
 SUDEOF
 chmod 440 "$SUDOERS_FILE"
 visudo -cf "$SUDOERS_FILE" && log_ok "Sudoers rule valid: $SUDOERS_FILE" \
