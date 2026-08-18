@@ -141,6 +141,53 @@ def _write_silent_wav(path: str, duration_ms: int = 200, sr: int = 48000) -> Non
 _SILENCE_PEAK = 5e-4
 
 
+def _finalize_wav_header(path: str) -> bool:
+    """Backfill the RIFF and data-chunk size fields when a streaming writer
+    (jack_capture) leaves them at 0. Such files play fine to EOF but many
+    players/DAWs report 0-length or refuse them. Only rewrites when the data
+    size is actually broken (0 or larger than the file). Returns True if fixed."""
+    import struct
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return False
+    if size < 44:
+        return False
+    try:
+        with open(path, "r+b") as fh:
+            head = fh.read(12)
+            if head[:4] != b"RIFF" or head[8:12] != b"WAVE":
+                return False
+            pos = 12
+            data_pos = data_sz = None
+            while True:
+                fh.seek(pos)
+                hdr = fh.read(8)
+                if len(hdr) < 8:
+                    break
+                cid = hdr[:4]
+                sz = struct.unpack("<I", hdr[4:8])[0]
+                if cid == b"data":
+                    data_pos, data_sz = pos, sz
+                    break
+                if sz == 0 or sz > size - (pos + 8):
+                    break
+                pos += 8 + sz + (sz & 1)
+            if data_pos is None:
+                return False
+            avail = size - (data_pos + 8)
+            if data_sz not in (0,) and data_sz <= avail:
+                return False  # header already valid — leave it alone
+            fh.seek(data_pos + 4)
+            fh.write(struct.pack("<I", avail))     # real data size
+            fh.seek(4)
+            fh.write(struct.pack("<I", size - 8))  # real RIFF size
+            return True
+    except Exception as exc:
+        log.warning("Could not finalize WAV header %s: %s", path, exc)
+        return False
+
+
 def _wav_channel_peaks(path: str) -> Optional[list[float]]:
     """Per-channel peak amplitude (0.0..1.0) of a PCM WAV, or None if unreadable.
     Handles standard PCM and WAVE_FORMAT_EXTENSIBLE (multichannel), 16- and 24-bit.
@@ -879,6 +926,15 @@ class RecorderController:
                 pass
             elif out_path is None or not out_path.exists() or out_path.stat().st_size == 0:
                 raise RuntimeError(f"Output file missing or empty: {out_path}")
+
+            # Finalize the WAV header so it opens cleanly in players/DAWs
+            # (jack_capture can leave the size fields at 0).
+            if out_path is not None and not MOCK_MODE:
+                try:
+                    if _finalize_wav_header(str(out_path)):
+                        log.info("Finalized WAV header: %s", out_path.name)
+                except Exception:
+                    pass
 
             if out_path is not None:
                 go_offset = (
