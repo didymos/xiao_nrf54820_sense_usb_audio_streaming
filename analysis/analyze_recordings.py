@@ -56,11 +56,20 @@ def read_wav(path: str) -> tuple[np.ndarray, int]:
     while pos + 8 <= len(data):
         cid = data[pos:pos + 4]
         sz = struct.unpack("<I", data[pos + 4:pos + 8])[0]
-        body = data[pos + 8:pos + 8 + sz]
+        avail = len(data) - (pos + 8)
+        if cid == b"data":
+            # Streaming/interrupted recorders leave the data size at 0 (or
+            # 0xFFFFFFFF); the samples then run to EOF. Trust EOF in that case.
+            if sz == 0 or sz > avail:
+                audio = data[pos + 8:]
+                break
+            audio = data[pos + 8:pos + 8 + sz]
+            pos += 8 + sz + (sz & 1)
+            continue
         if cid == b"fmt ":
-            fmt = body
-        elif cid == b"data":
-            audio = body
+            fmt = data[pos + 8:pos + 8 + sz]
+        if sz == 0 or sz > avail:
+            break
         pos += 8 + sz + (sz & 1)
     if not fmt or audio is None or len(fmt) < 16:
         raise ValueError(f"Malformed WAV (no fmt/data): {path}")

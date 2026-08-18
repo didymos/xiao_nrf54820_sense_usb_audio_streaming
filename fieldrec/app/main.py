@@ -159,11 +159,22 @@ def _wav_channel_peaks(path: str) -> Optional[list[float]]:
     while pos + 8 <= len(data):
         cid = data[pos:pos + 4]
         sz = struct.unpack("<I", data[pos + 4:pos + 8])[0]
-        chunk = data[pos + 8:pos + 8 + sz]
+        avail = len(data) - (pos + 8)
+        if cid == b"data":
+            # jack_capture (and other streaming writers) may leave the data
+            # chunk size at 0 / 0xFFFFFFFF when the header isn't backfilled;
+            # the samples then run to EOF. Without this the detector reads 0
+            # frames and flags every channel as silent.
+            if sz == 0 or sz > avail:
+                audio = data[pos + 8:]
+                break
+            audio = data[pos + 8:pos + 8 + sz]
+            pos += 8 + sz + (sz & 1)
+            continue
         if cid == b"fmt ":
-            fmt = chunk
-        elif cid == b"data":
-            audio = chunk
+            fmt = data[pos + 8:pos + 8 + sz]
+        if sz == 0 or sz > avail:
+            break
         pos += 8 + sz + (sz & 1)
     if not fmt or audio is None or len(fmt) < 16:
         return None
