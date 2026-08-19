@@ -123,6 +123,8 @@ class ChannelMetrics:
     channel: int
     position: str = ""
     mount: str = ""
+    side: str = ""               # stereo side (L/R) in --stereo-vs mode
+    condition: str = ""          # e.g. windscreen state, parsed from filename
     label: str = ""
     device_id: str = ""          # serial / usb socket from sidecar, if any
     duration_s: float = 0.0
@@ -299,6 +301,43 @@ def add_consensus_wer(rows: list[ChannelMetrics], tokens_by_ch: dict[int, list[s
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Filename parsing for the "A VS B" stereo-pair layout
+# ─────────────────────────────────────────────────────────────────────────────
+# Windscreen conditions, checked in order (first match wins). Extend as needed.
+_CONDITIONS = [
+    (r"(?:mit|with)?\s*dead\s*cat",           "Dead Cat"),
+    (r"(?:ohne|kein|without|no)\s*windsch\w*", "ohne Windschutz"),
+    (r"(?:mit|with)\s*windsch\w*",             "mit Windschutz"),
+    (r"windsch\w*",                            "Windschutz"),
+    (r"(?:mit|with)?\s*wind\s*screen",         "Windscreen"),
+]
+
+
+def parse_vs_filename(fname: str) -> tuple[list[str], str]:
+    """Parse '<…>_PosA_VS_PosB_<condition>_<take>.wav' into ([PosA, PosB], condition).
+    Underscores or spaces separate tokens; 'VS'/'vs'/'v.s.' splits the two
+    positions; a windscreen condition is detected and stripped. Returns the
+    position names title-cased and the condition label (may be '')."""
+    stem = os.path.splitext(os.path.basename(fname))[0]
+    txt = re.sub(r"[_\-]+", " ", stem).strip()
+
+    cond = ""
+    for pat, label in _CONDITIONS:
+        if re.search(pat, txt, flags=re.I):
+            cond = label
+            txt = re.sub(pat, " ", txt, flags=re.I)
+            break
+
+    # Position names are plain words — drop any token containing a digit
+    # (timestamps, index/take numbers, upload UUIDs) and connector words.
+    txt = re.sub(r"\b\w*\d\w*\b", " ", txt)
+    txt = re.sub(r"\b(?:mit|ohne|kein|und|with|without|no|and)\b", " ", txt, flags=re.I)
+    parts = re.split(r"(?i)\bv\.?\s*s\.?\b", txt)
+    names = [re.sub(r"\s+", " ", p).strip().title() for p in parts if p.strip()]
+    return names, cond
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Positions + sidecar
 # ─────────────────────────────────────────────────────────────────────────────
 def load_positions(path: Optional[str]) -> dict[int, dict]:
@@ -342,12 +381,22 @@ def device_id_for_channel(sidecar: dict, ch_index: int) -> str:
 # Analysis driver
 # ─────────────────────────────────────────────────────────────────────────────
 def analyze_file(path: str, positions: dict[int, dict],
-                 transcriber: Optional[Transcriber]) -> list[ChannelMetrics]:
+                 transcriber: Optional[Transcriber],
+                 stereo_vs: bool = False) -> list[ChannelMetrics]:
     samples, sr = read_wav(path)
     n_ch = samples.shape[1]
     sidecar = load_sidecar(path)
     rows: list[ChannelMetrics] = []
     tokens_by_ch: dict[int, list[str]] = {}
+
+    vs_names: list[str] = []
+    vs_cond = ""
+    if stereo_vs:
+        vs_names, vs_cond = parse_vs_filename(path)
+        if len(vs_names) != n_ch // 2:
+            print(f"  [warn] {os.path.basename(path)}: parsed {len(vs_names)} position "
+                  f"name(s) {vs_names} for {n_ch} channels ({n_ch // 2} stereo pairs); "
+                  f"labels may be off — check the filename.", file=sys.stderr)
 
     for c in range(n_ch):
         ch = c + 1
@@ -360,6 +409,13 @@ def analyze_file(path: str, positions: dict[int, dict],
             label=str(pos.get("label", "")),
             device_id=device_id_for_channel(sidecar, ch),
         )
+        if stereo_vs:
+            pair = c // 2
+            row.side = "L" if c % 2 == 0 else "R"
+            row.position = vs_names[pair] if pair < len(vs_names) else f"pos{pair + 1}"
+            row.mount = ""
+            row.condition = vs_cond
+            row.label = f"{row.position} {row.side}"
         for k, v in acoustic_metrics(x, sr).items():
             setattr(row, k, v)
         if transcriber is not None:
@@ -383,14 +439,22 @@ def analyze_file(path: str, positions: dict[int, dict],
 # Reporting
 # ─────────────────────────────────────────────────────────────────────────────
 def _pos_label(r: ChannelMetrics) -> str:
+    """Base grouping key for a channel's position (NO stereo side, so L+R of a
+    position aggregate together)."""
     parts = [p for p in (r.mount, r.position) if p]
     base = "/".join(parts) if parts else (r.label or r.device_id or "—")
     return base
 
 
+def _channel_label(r: ChannelMetrics) -> str:
+    """Per-channel display label — position plus stereo side, when present."""
+    base = _pos_label(r)
+    return f"{base} {r.side}" if r.side else base
+
+
 def print_table(name: str, rows: list[ChannelMetrics], with_asr: bool) -> None:
     print(f"\n=== {name} ===")
-    cols = [("CH", 3), ("position", 16), ("SNR", 6), ("noise", 7), ("speech", 7),
+    cols = [("CH", 3), ("position", 18), ("SNR", 6), ("noise", 7), ("speech", 7),
             ("clip%", 6), ("act%", 6), ("cent", 6), ("score", 6)]
     if with_asr:
         cols += [("words", 6), ("conf", 6), ("WER", 6)]
@@ -400,7 +464,7 @@ def print_table(name: str, rows: list[ChannelMetrics], with_asr: bool) -> None:
     for r in sorted(rows, key=lambda r: r.channel):
         cells = [
             str(r.channel).ljust(3),
-            _pos_label(r)[:15].ljust(16),
+            _channel_label(r)[:17].ljust(18),
             f"{r.snr_db:.1f}".ljust(6),
             f"{r.noise_floor_dbfs:.0f}".ljust(7),
             f"{r.speech_level_dbfs:.0f}".ljust(7),
@@ -454,13 +518,13 @@ def summarise(rows: list[ChannelMetrics], with_asr: bool) -> list[str]:
     return out
 
 
-def aggregate_positions(all_rows: list[tuple[str, ChannelMetrics]], with_asr: bool) -> list[dict]:
-    """Group every analysed channel (across all takes) by position/mount and
-    average the metrics — the per-position comparison over multiple recordings."""
+def aggregate_by(all_rows: list[tuple[str, ChannelMetrics]], keyfn, with_asr: bool) -> list[dict]:
+    """Group every analysed channel (across all takes) by keyfn(row) and average
+    the metrics — the position comparison over multiple recordings."""
     from collections import defaultdict
     groups: dict[str, list[ChannelMetrics]] = defaultdict(list)
     for _fname, r in all_rows:
-        groups[_pos_label(r)].append(r)
+        groups[keyfn(r)].append(r)
 
     def mean(rows, attr):
         vals = [getattr(x, attr) for x in rows if getattr(x, attr) is not None]
@@ -489,11 +553,13 @@ def aggregate_positions(all_rows: list[tuple[str, ChannelMetrics]], with_asr: bo
     return out
 
 
-def print_aggregate(agg: list[dict], with_asr: bool) -> None:
+def print_aggregate(agg: list[dict], with_asr: bool,
+                    title: str = "Aggregate by position (mean over all takes)",
+                    colhead: str = "position") -> None:
     if not agg:
         return
-    print("\n=== Aggregate by position (mean over all takes) ===")
-    cols = [("position", 18), ("takes", 6), ("SNR", 7), ("score", 7),
+    print(f"\n=== {title} ===")
+    cols = [(colhead, 22), ("takes", 6), ("SNR", 7), ("score", 7),
             ("speech", 8), ("noise", 7), ("clipmax", 8)]
     if with_asr:
         cols += [("words", 7), ("conf", 6), ("WER", 6)]
@@ -505,7 +571,7 @@ def print_aggregate(agg: list[dict], with_asr: bool) -> None:
 
     for d in agg:
         row = [
-            str(d["position"])[:17].ljust(18),
+            str(d["position"])[:21].ljust(22),
             str(d["takes"]).ljust(6),
             cell(d["snr_db"]).ljust(7),
             cell(d["quality_score"], "{:.0f}").ljust(7),
@@ -540,6 +606,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Analyse FieldRec recordings: quality & intelligibility per position.")
     ap.add_argument("input", help="A WAV file or a directory of WAV files")
     ap.add_argument("--positions", help="positions.json (channel → position/mount)")
+    ap.add_argument("--stereo-vs", action="store_true",
+                    help="Layout is 'PosA VS PosB', each stereo: CH1/2=PosA(L/R), CH3/4=PosB(L/R). "
+                         "Position names and windscreen condition are read from each filename "
+                         "(e.g. '..._Helm_VS_Startnummer_ohne_Windschutz.wav').")
     ap.add_argument("--transcribe", action="store_true", help="Also measure speech intelligibility (needs Whisper)")
     ap.add_argument("--model", default="base", help="Whisper model size (tiny/base/small/medium)")
     ap.add_argument("--language", default=None, help="Force language (e.g. de, en); default auto-detect")
@@ -564,7 +634,7 @@ def main() -> int:
     for path in files:
         name = os.path.basename(path)
         try:
-            rows = analyze_file(path, positions, transcriber)
+            rows = analyze_file(path, positions, transcriber, stereo_vs=args.stereo_vs)
         except Exception as exc:
             print(f"[error] {name}: {exc}", file=sys.stderr)
             continue
@@ -575,7 +645,8 @@ def main() -> int:
             _plot_file(os.path.join(args.out, os.path.splitext(name)[0] + ".png"), name, rows)
 
     if all_rows:
-        agg = aggregate_positions(all_rows, args.transcribe)
+        # Primary: by position name (stereo L+R and all takes combined)
+        agg = aggregate_by(all_rows, _pos_label, args.transcribe)
         print_aggregate(agg, args.transcribe)
 
         csv_path = os.path.join(args.out, "analysis.csv")
@@ -584,6 +655,20 @@ def main() -> int:
         write_aggregate_csv(agg_path, agg)
         print(f"\nWrote {csv_path}  ({len(all_rows)} channel rows)")
         print(f"Wrote {agg_path}  ({len(agg)} position groups)")
+
+        # Secondary: by position × condition (e.g. windscreen state)
+        if any(r.condition for _f, r in all_rows):
+            agg_c = aggregate_by(
+                all_rows,
+                lambda r: f"{_pos_label(r)} · {r.condition or '—'}",
+                args.transcribe,
+            )
+            print_aggregate(agg_c, args.transcribe,
+                            title="Aggregate by position × condition",
+                            colhead="position · condition")
+            aggc_path = os.path.join(args.out, "aggregate_by_condition.csv")
+            write_aggregate_csv(aggc_path, agg_c)
+            print(f"Wrote {aggc_path}  ({len(agg_c)} groups)")
     return 0
 
 

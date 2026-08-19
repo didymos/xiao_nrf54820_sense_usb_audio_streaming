@@ -34,6 +34,35 @@ The channel order matches the recording (CH1 = first channel). If a recording
 has a sidecar `.json` (FieldRec writes one next to each WAV), the tool also picks
 up each channel's device serial / USB socket automatically.
 
+## Comparing two positions per file — `--stereo-vs`
+
+For A/B tests where **each 4-channel file compares two stereo positions**, and
+*which* positions (plus the windscreen condition) change per file and are
+encoded in the **filename**:
+
+```
+…_Helm_VS_Startnummer_ohne_Windschutz.wav
+…_Skibrille_VS_Helm_mit_Dead_Cat.wav
+```
+
+Run with `--stereo-vs` (no positions.json needed):
+
+```bash
+python analyze_recordings.py ./recordings/ --stereo-vs --transcribe --model small --language de
+```
+
+- Channel layout: **CH1/2 = Position A (L/R), CH3/4 = Position B (L/R)**.
+- Position names are taken from the `A VS B` part of the filename; the
+  windscreen condition (`mit Dead Cat`, `ohne Windschutz`, `mit Windschutz`, …)
+  is detected automatically.
+- You get **two aggregate tables**: by **position** (each position averaged over
+  every file/take where it appears — e.g. Helm vs. Skibrille vs. Start-number)
+  and by **position × condition** (e.g. Helm *with* vs. *without* windscreen),
+  saved as `aggregate.csv` and `aggregate_by_condition.csv`.
+
+> Keep the position spelling consistent across filenames — `Startnummer` and
+> `Startnnummer` would otherwise count as two different positions.
+
 ## Usage
 
 ```bash
